@@ -1,0 +1,572 @@
+import Foundation
+
+// MARK: - XMPPManager
+//
+// Swift actor that owns the entire XMPP session lifecycle:
+//   TCP connect → STARTTLS → SASL PLAIN → Resource Binding → Active session
+//
+// Transport: CFStreamCreatePairWithSocketToHost (supports mid-stream STARTTLS upgrade)
+// Concurrency: actor isolation + StreamBridge for RunLoop→async bridging
+// Events:  AsyncStream-based (connectionStateStream, inboundMessageStream, etc.)
+
+actor XMPPManager {
+
+    // MARK: - Public AsyncStreams
+
+    private let (connectionStateStream, _connCont):    (AsyncStream<ConnectionState>,                               AsyncStream<ConnectionState>.Continuation)
+    private let (inboundMessageStream,  _msgCont):     (AsyncStream<Message>,                                       AsyncStream<Message>.Continuation)
+    private let (rosterUpdateStream,    _rosterCont):  (AsyncStream<[Contact]>,                                     AsyncStream<[Contact]>.Continuation)
+    private let (presenceUpdateStream,  _presenceCont):(AsyncStream<(jid: String, status: PresenceStatus)>,         AsyncStream<(jid: String, status: PresenceStatus)>.Continuation)
+    private let (chatStateStream,       _chatStateCont):(AsyncStream<(from: String, state: ChatState)>,             AsyncStream<(from: String, state: ChatState)>.Continuation)
+
+    // Callers subscribe to these
+    nonisolated let connectionState: AsyncStream<ConnectionState>
+    nonisolated let inboundMessages: AsyncStream<Message>
+    nonisolated let rosterUpdates:   AsyncStream<[Contact]>
+    nonisolated let presenceUpdates: AsyncStream<(jid: String, status: PresenceStatus)>
+    nonisolated let chatStates:      AsyncStream<(from: String, state: ChatState)>
+
+    // MARK: - Connection Phase
+
+    private enum Phase {
+        case disconnected
+        case tcpConnected       // TCP open, stream:stream sent
+        case tlsHandshaking     // STARTTLS sent, waiting for <proceed/>
+        case tlsNegotiated      // TLS active, new stream:stream sent
+        case saslSent           // SASL <auth> sent
+        case saslSucceeded      // <success> received, new stream:stream sent
+        case binding            // <iq bind> sent
+        case active             // Fully operational
+    }
+
+    // MARK: - Private State
+
+    private var phase: Phase = .disconnected
+
+    // Network
+    private var worker: StreamWorker?
+    private var parser = XMPPStreamParser()
+
+    // Session
+    private var myBareJID  = ""
+    private var myFullJID  = ""
+    private var domain     = ""
+    private var password   = ""
+    private var resource   = "XMPPDemo-iOS"
+
+    // Roster cache
+    private var contacts: [String: Contact] = [:]
+
+    // Pending IQ callbacks keyed by stanza id
+    private var iqCallbacks: [String: CheckedContinuation<XMPPElement, Error>] = [:]
+
+    // MARK: - Init
+
+    init() {
+        let (cs, cc) = AsyncStream<ConnectionState>.makeStream()
+        let (ms, mc) = AsyncStream<Message>.makeStream()
+        let (rs, rc) = AsyncStream<[Contact]>.makeStream()
+        let (ps, pc) = AsyncStream<(jid: String, status: PresenceStatus)>.makeStream()
+        let (ts, tc) = AsyncStream<(from: String, state: ChatState)>.makeStream()
+
+        connectionStateStream = cs; _connCont = cc
+        inboundMessageStream  = ms; _msgCont  = mc
+        rosterUpdateStream    = rs; _rosterCont = rc
+        presenceUpdateStream  = ps; _presenceCont = pc
+        chatStateStream       = ts; _chatStateCont = tc
+
+        connectionState = cs
+        inboundMessages = ms
+        rosterUpdates   = rs
+        presenceUpdates = ps
+        chatStates      = ts
+    }
+
+    // MARK: - Public API
+
+    /// Connects to `host:port`, authenticates with SASL PLAIN, and enters active state.
+    func connect(jid: String, password: String, host: String? = nil, port: Int = 5222) async throws {
+        guard phase == .disconnected else { return }
+
+        self.password = password
+        let (local, dom) = parseJID(jid)
+        self.myBareJID = "\(local)@\(dom)"
+        self.domain    = dom
+        let connectHost = host ?? dom
+
+        emit(.connecting)
+
+        try openConnection(host: connectHost, port: port)
+    }
+
+    func disconnect() {
+        guard phase != .disconnected else { return }
+        send("</stream:stream>")
+        tearDown()
+        emit(.disconnected)
+    }
+
+    /// Creates and sends a `<message>` stanza. Returns the domain `Message` immediately.
+    @discardableResult
+    func sendMessage(to recipientJID: String, body: String) throws -> Message {
+        guard phase == .active else { throw XMPPError.notConnected }
+        let msgID = UUID().uuidString
+        let xml = """
+        <message type="chat" to="\(recipientJID)" id="\(msgID)" xml:lang="en">\
+        <body>\(escapeXML(body))</body>\
+        <active xmlns="http://jabber.org/protocol/chatstates"/>\
+        </message>
+        """
+        send(xml)
+        return Message(
+            id: msgID, fromJID: myBareJID, toJID: bareJID(recipientJID),
+            body: body, timestamp: .now, deliveryStatus: .sent, isOutgoing: true
+        )
+    }
+
+    func sendChatState(_ state: ChatState, to recipientJID: String) {
+        guard phase == .active else { return }
+        send("""
+        <message type="chat" to="\(recipientJID)">\
+        <\(state.rawValue) xmlns="http://jabber.org/protocol/chatstates"/>\
+        </message>
+        """)
+    }
+
+    func sendPresence(show: String? = nil, statusText: String? = nil) {
+        guard phase == .active else { return }
+        var xml = "<presence>"
+        if let show { xml += "<show>\(show)</show>" }
+        if let s = statusText { xml += "<status>\(escapeXML(s))</status>" }
+        xml += "</presence>"
+        send(xml)
+    }
+
+    func requestRoster() {
+        guard phase == .active else { return }
+        let id = UUID().uuidString
+        send("<iq type=\"get\" id=\"\(id)\"><query xmlns=\"jabber:iq:roster\"/></iq>")
+    }
+
+    // MARK: - TCP Connection
+
+    private func openConnection(host: String, port: Int) throws {
+        var readRef:  Unmanaged<CFReadStream>?
+        var writeRef: Unmanaged<CFWriteStream>?
+
+        CFStreamCreatePairWithSocketToHost(kCFAllocatorDefault, host as CFString, UInt32(port), &readRef, &writeRef)
+
+        guard let r = readRef?.takeRetainedValue(), let w = writeRef?.takeRetainedValue() else {
+            throw XMPPError.connectionFailed("CFStream creation failed")
+        }
+
+        let inputStream  = r as InputStream
+        let outputStream = w as OutputStream
+
+        resetParser()
+
+        let bridge = StreamBridge()
+        bridge.onData  = { [weak self] data  in Task { await self?.receivedData(data)   } }
+        bridge.onError = { [weak self] error in Task { await self?.streamError(error)   } }
+        bridge.onEnd   = { [weak self]       in Task { await self?.streamDisconnected() } }
+
+        let w2 = StreamWorker(input: inputStream, output: outputStream, bridge: bridge)
+        self.worker = w2
+
+        phase = .tcpConnected
+        openStream()
+    }
+
+    // MARK: - Stream Open
+
+    private func openStream() {
+        let xml = """
+        <?xml version="1.0"?>\
+        <stream:stream to="\(domain)" \
+        xmlns="jabber:client" \
+        xmlns:stream="http://etherx.jabber.org/streams" \
+        version="1.0">
+        """
+        print("XMPP: Sending stream open: \(xml)")
+        send(xml)
+    }
+
+    // MARK: - Incoming Data
+
+    func receivedData(_ data: Data) {
+        if let str = String(data: data, encoding: .utf8) {
+            print("XMPP: Received raw \(data.count) bytes: \(str)")
+        }
+        parser.receive(data: data)
+    }
+
+    func streamError(_ error: Error?) {
+        print("XMPP: Stream Error: \(error?.localizedDescription ?? "unknown")")
+        emit(.failed(reason: error?.localizedDescription ?? "Stream error"))
+        tearDown()
+    }
+
+    func streamDisconnected() {
+        print("XMPP: Stream Disconnected")
+        guard phase != .disconnected else { return }
+        tearDown()
+        emit(.disconnected)
+    }
+
+    // MARK: - Parser Wiring
+
+    private func resetParser() {
+        parser = XMPPStreamParser()
+        parser.onStreamOpened = { [weak self] id, from in
+            Task { await self?.streamOpened(id: id, from: from) }
+        }
+        parser.onStanza = { [weak self] element in
+            Task { await self?.handleStanza(XMPPStanza.parse(element)) }
+        }
+        parser.onStreamClosed = { [weak self] in
+            Task { await self?.streamDisconnected() }
+        }
+    }
+
+    // MARK: - Stream Opened
+
+    private func streamOpened(id _: String, from _: String) {
+        // Called after every new stream:stream opening (post-TLS, post-SASL)
+    }
+
+    private func handleStanza(_ stanza: XMPPStanza) {
+        print("XMPP: RECV Stanza: \(stanza)")
+        switch stanza {
+
+        case .streamFeatures(let el):
+            negotiateFeatures(el)
+
+        case .proceed:
+            print("XMPP: Upgrading to TLS...")
+            upgradeTLS()
+
+        case .saslSuccess:
+            print("XMPP: SASL Success!")
+            // Reset parser and re-open stream after SASL
+            phase = .saslSucceeded
+            resetParser()
+            openStream()
+
+        case .saslFailure(let condition):
+            print("XMPP: SASL Failure: \(condition)")
+            emit(.failed(reason: "Auth failed: \(condition)"))
+            tearDown()
+
+        case .saslChallenge:
+            break  // PLAIN mechanism doesn't use challenges
+
+        case .message(let from, _, let id, let body):
+            guard !body.isEmpty else { return }
+            let msg = Message(
+                id: id, fromJID: bareJID(from), toJID: myBareJID,
+                body: body, timestamp: .now, deliveryStatus: .delivered, isOutgoing: false
+            )
+            _msgCont.yield(msg)
+
+        case .presence(let from, let show, _, let type):
+            handlePresence(from: from, show: show, type: type)
+
+        case .iq(let id, let type, let element):
+            handleIQ(id: id, type: type, element: element)
+
+        case .chatState(let from, let state):
+            _chatStateCont.yield((from: bareJID(from), state: state))
+
+        case .streamError(let condition):
+            emit(.failed(reason: "Stream error: \(condition)"))
+            tearDown()
+
+        case .unknown:
+            break
+        }
+    }
+
+    // MARK: - Feature Negotiation
+
+    private func negotiateFeatures(_ features: XMPPElement) {
+        print("XMPP: Negotiating features in phase \(phase)")
+        switch phase {
+
+        case .tcpConnected:
+            if features.hasChild(named: "starttls") {
+                phase = .tlsHandshaking
+                send("<starttls xmlns=\"urn:ietf:params:xml:ns:xmpp-tls\"/>")
+            } else {
+                sendSASLAuth()
+            }
+
+        case .tlsNegotiated, .saslSucceeded:
+            if features.hasChild(named: "mechanisms") {
+                sendSASLAuth()
+            } else if features.hasChild(named: "bind") {
+                bindResource()
+            }
+
+        default:
+            break
+        }
+    }
+
+    // MARK: - TLS Upgrade
+
+    private func upgradeTLS() {
+        worker?.upgradeTLS()
+        phase = .tlsNegotiated
+        resetParser()
+        openStream()
+    }
+
+    // MARK: - SASL PLAIN
+
+    private func sendSASLAuth() {
+        phase = .saslSent
+        let local = myBareJID.components(separatedBy: "@").first ?? myBareJID
+        // PLAIN: \0localpart\0password
+        let raw = "\0\(local)\0\(password)"
+        let encoded = Data(raw.utf8).base64EncodedString()
+        send("""
+        <auth xmlns="urn:ietf:params:xml:ns:xmpp-sasl" mechanism="PLAIN">\(encoded)</auth>
+        """)
+    }
+
+    // MARK: - Resource Binding
+
+    private func bindResource() {
+        phase = .binding
+        let id = UUID().uuidString
+        send("""
+        <iq type="set" id="\(id)">\
+        <bind xmlns="urn:ietf:params:xml:ns:xmpp-bind">\
+        <resource>\(resource)</resource>\
+        </bind>\
+        </iq>
+        """)
+    }
+
+    // MARK: - IQ Handling
+
+    private func handleIQ(id: String, type: String, element: XMPPElement) {
+        // Resource binding result
+        if phase == .binding,
+           let bind = element.child(named: "bind"),
+           let jidEl = bind.child(named: "jid") {
+            myFullJID = jidEl.text
+            phase = .active
+            emit(.connected)
+            sendPresence()
+            requestRoster()
+            return
+        }
+
+        // Roster result
+        if let query = element.child(named: "query"),
+           query.attributes["xmlns"] == "jabber:iq:roster" {
+            let updated = query.children(named: "item").compactMap { item -> Contact? in
+                guard let jid = item.attributes["jid"] else { return nil }
+                return Contact(jid: jid, name: item.attributes["name"] ?? "", presenceStatus: .offline)
+            }
+            updated.forEach { contacts[$0.jid] = $0 }
+            _rosterCont.yield(Array(contacts.values))
+            return
+        }
+
+        // Pending continuation (request/response pattern)
+        if let cont = iqCallbacks.removeValue(forKey: id) {
+            type == "result"
+                ? cont.resume(returning: element)
+                : cont.resume(throwing: XMPPError.iqError)
+        }
+    }
+
+    // MARK: - Presence Handling
+
+    private func handlePresence(from: String, show: String?, type: String?) {
+        let bare = bareJID(from)
+        guard bare != myBareJID else { return }
+
+        let status = PresenceStatus.from(xmppShow: show, type: type)
+        contacts[bare]?.presenceStatus = status
+        _presenceCont.yield((jid: bare, status: status))
+        _rosterCont.yield(Array(contacts.values))
+    }
+
+    // MARK: - Utilities
+
+    private func emit(_ state: ConnectionState) {
+        _connCont.yield(state)
+    }
+
+    @discardableResult
+    private func send(_ xml: String) -> Bool {
+        worker?.write(xml) ?? false
+    }
+
+    private func tearDown() {
+        phase = .disconnected
+        worker?.close()
+        worker = nil
+        iqCallbacks.values.forEach { $0.resume(throwing: XMPPError.disconnected) }
+        iqCallbacks.removeAll()
+        contacts.removeAll()
+    }
+
+    private func bareJID(_ jid: String) -> String {
+        jid.components(separatedBy: "/").first ?? jid
+    }
+
+    private func parseJID(_ jid: String) -> (local: String, domain: String) {
+        let parts = jid.components(separatedBy: "@")
+        let local  = parts.first ?? ""
+        let domain = parts.count > 1 ? parts[1].components(separatedBy: "/").first ?? parts[1] : ""
+        return (local, domain)
+    }
+
+    private func escapeXML(_ str: String) -> String {
+        str
+            .replacingOccurrences(of: "&",  with: "&amp;")
+            .replacingOccurrences(of: "<",  with: "&lt;")
+            .replacingOccurrences(of: ">",  with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'",  with: "&apos;")
+    }
+}
+
+// MARK: - XMPPError
+
+nonisolated enum XMPPError: LocalizedError {
+    case invalidJID
+    case notConnected
+    case disconnected
+    case connectionFailed(String)
+    case authenticationFailed(String)
+    case iqError
+    case timeout
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidJID:                  return "Invalid JID — expected user@domain"
+        case .notConnected:                return "Not connected to server"
+        case .disconnected:                return "Disconnected from server"
+        case .connectionFailed(let r):     return "Connection failed: \(r)"
+        case .authenticationFailed(let r): return "Authentication failed: \(r)"
+        case .iqError:                     return "Server returned an IQ error"
+        case .timeout:                     return "Operation timed out"
+        }
+    }
+}
+
+// MARK: - StreamWorker
+//
+// Owns the InputStream/OutputStream pair and runs a dedicated RunLoop thread.
+// @unchecked Sendable because stream access is confined to that thread.
+
+nonisolated final class StreamWorker: @unchecked Sendable {
+
+    private let inputStream:  InputStream
+    private let outputStream: OutputStream
+    private let bridge: StreamBridge
+    private let thread: Thread
+
+    init(input: InputStream, output: OutputStream, bridge: StreamBridge) {
+        self.inputStream  = input
+        self.outputStream = output
+        self.bridge = bridge
+
+        // Capture local refs to avoid actor-isolation issues inside the Thread closure
+        nonisolated(unsafe) let ins = input
+        nonisolated(unsafe) let outs = output
+        let b = bridge
+
+        thread = Thread {
+            ins.delegate  = b
+            outs.delegate = b
+            ins.schedule(in:  .current, forMode: .common)
+            outs.schedule(in: .current, forMode: .common)
+            ins.open()
+            outs.open()
+            
+            // Keep the RunLoop alive even if the stream sources temporarily drop
+            RunLoop.current.add(NSMachPort(), forMode: .common)
+            while !Thread.current.isCancelled {
+                RunLoop.current.run(mode: .default, before: .distantFuture)
+            }
+        }
+        thread.name = "com.xmppdemo.stream-worker"
+        thread.qualityOfService = .userInitiated
+        thread.start()
+    }
+
+    @discardableResult
+    func write(_ xml: String) -> Bool {
+        guard let data = xml.data(using: .utf8) else { return false }
+        var written = 0
+        data.withUnsafeBytes { ptr in
+            guard let base = ptr.bindMemory(to: UInt8.self).baseAddress else { return }
+            while written < data.count {
+                let n = outputStream.write(base + written, maxLength: data.count - written)
+                guard n > 0 else { return }
+                written += n
+            }
+        }
+        return written == data.count
+    }
+
+    func upgradeTLS() {
+        let settings: [CFString: Any] = [
+            kCFStreamSSLValidatesCertificateChain: kCFBooleanFalse as Any,
+            kCFStreamSSLPeerName: kCFNull as Any
+        ]
+        let sslKey = CFStreamPropertyKey(rawValue: kCFStreamPropertySSLSettings)
+        CFReadStreamSetProperty(inputStream, sslKey, settings as CFDictionary)
+        CFWriteStreamSetProperty(outputStream, sslKey, settings as CFDictionary)
+        inputStream.setProperty(
+            StreamSocketSecurityLevel.negotiatedSSL.rawValue,
+            forKey: .socketSecurityLevelKey
+        )
+        outputStream.setProperty(
+            StreamSocketSecurityLevel.negotiatedSSL.rawValue,
+            forKey: .socketSecurityLevelKey
+        )
+    }
+
+    func close() {
+        thread.cancel()
+        inputStream.close()
+        outputStream.close()
+    }
+}
+
+// MARK: - StreamBridge
+//
+// NSObject StreamDelegate that bridges RunLoop callbacks → async Tasks.
+// @unchecked Sendable: closures are set once before start, thread-safe by usage.
+
+nonisolated final class StreamBridge: NSObject, StreamDelegate, @unchecked Sendable {
+    var onData:  ((Data) -> Void)?
+    var onError: ((Error?) -> Void)?
+    var onEnd:   (() -> Void)?
+
+    func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+        switch eventCode {
+        case .hasBytesAvailable:
+            guard let input = aStream as? InputStream else { return }
+            var buf = [UInt8](repeating: 0, count: 8_192)
+            let n = input.read(&buf, maxLength: buf.count)
+            if n > 0 { onData?(Data(buf[..<n])) }
+
+        case .errorOccurred:
+            onError?(aStream.streamError)
+
+        case .endEncountered:
+            onEnd?()
+
+        default:
+            break
+        }
+    }
+}

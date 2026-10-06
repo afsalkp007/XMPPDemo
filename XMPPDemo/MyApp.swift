@@ -1,9 +1,14 @@
 import SwiftUI
 
-@main struct MyApp: App {
+@main
+struct MyApp: App {
+    @State private var env = AppEnvironment.shared
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(env)
+                .preferredColorScheme(.dark)
         }
     }
 }
