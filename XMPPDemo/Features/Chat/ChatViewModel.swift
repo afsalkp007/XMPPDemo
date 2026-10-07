@@ -40,6 +40,11 @@ final class ChatViewModel {
     // MARK: - Lifecycle
 
     private func bootstrap() async {
+        let liveSessionContacts = await env.xmpp.getActiveContacts()
+        if let liveContact = liveSessionContacts.first(where: { $0.jid == self.contact.jid }) {
+            self.contact.presenceStatus = liveContact.presenceStatus
+        }
+        
         await loadHistory()
         subscribeToMessages()
         subscribeToChatStates()
