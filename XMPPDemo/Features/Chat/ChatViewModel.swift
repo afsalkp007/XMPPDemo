@@ -145,8 +145,16 @@ final class ChatViewModel {
     private func subscribeToConnectionState() {
         let t = Task { [weak self] in
             guard let self else { return }
-            for await state in env.xmpp.connectionState {
-                self.connectionState = state
+            // Observe the @Observable env.connectionState, not the raw stream.
+            while !Task.isCancelled {
+                self.connectionState = env.connectionState
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    withObservationTracking {
+                        _ = env.connectionState
+                    } onChange: {
+                        cont.resume()
+                    }
+                }
             }
         }
         taskBag.tasks.append(t)

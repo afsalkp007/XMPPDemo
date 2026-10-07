@@ -85,8 +85,18 @@ final class ConversationListViewModel {
     }
 
     private func subscribeToConnectionState() async {
-        for await state in env.xmpp.connectionState {
-            connectionState = state
+        // Observe the @Observable env.connectionState property rather than
+        // re-consuming xmpp.connectionState (single-consumer AsyncStream).
+        while !Task.isCancelled {
+            connectionState = env.connectionState
+            // Suspend until env.connectionState changes, then loop.
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                withObservationTracking {
+                    _ = env.connectionState
+                } onChange: {
+                    cont.resume()
+                }
+            }
         }
     }
 
