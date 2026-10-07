@@ -21,7 +21,10 @@ This project demonstrates a production-ready real-time messaging architecture, c
 - **Backend Compatibility:** Fully tested against `ejabberd` (Erlang) and fully compliant with RFC 6120/6121.
 
 ## 📱 Screenshots
-*(Add screenshots of your ChatView, ConversationListView, and LoginView here)*
+<img width="1206" height="2622" alt="Screenshot iPhone 18 Pro 07-10-2026 at 7 29 27 PM" src="https://github.com/user-attachments/assets/eeb38d83-470b-40bb-b6ec-94c4b088201c" />
+<img width="1206" height="2622" alt="Screenshot iPhone 17 Pro 07-10-2026 at 7 29 12 PM" src="https://github.com/user-attachments/assets/eaa8f366-e97c-4b14-b297-21601897f82b" />
+<img width="1206" height="2622" alt="Screenshot iPhone 17 Pro 07-10-2026 at 7 29 01 PM" src="https://github.com/user-attachments/assets/4f50ad68-1079-4fcc-a96f-463dcb1af3bc" />
+
 
 ## 🧠 Architecture Highlights
 
