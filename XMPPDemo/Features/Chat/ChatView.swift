@@ -114,7 +114,7 @@ struct ChatView: View {
 
     private var typingIndicator: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            AvatarView(contact: contact, size: 28)
+            AvatarView(contact: vm.contact, size: 28)
 
             HStack(spacing: 4) {
                 ForEach(0..<3, id: \.self) { i in
@@ -147,15 +147,15 @@ struct ChatView: View {
     private var navbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             VStack(spacing: 2) {
-                Text(contact.displayName)
+                Text(vm.contact.displayName)
                     .font(.appHeadline)
                     .foregroundStyle(.textPrimary)
 
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(presenceColor(contact.presenceStatus))
+                        .fill(presenceColor(vm.contact.presenceStatus))
                         .frame(width: 6, height: 6)
-                    Text(contact.presenceStatus.displayName)
+                    Text(vm.contact.presenceStatus.displayName)
                         .font(.appCaption2)
                         .foregroundStyle(.textSecondary)
                 }
@@ -163,7 +163,7 @@ struct ChatView: View {
         }
 
         ToolbarItem(placement: .topBarTrailing) {
-            AvatarView(contact: contact, size: 34)
+            AvatarView(contact: vm.contact, size: 34)
         }
     }
 

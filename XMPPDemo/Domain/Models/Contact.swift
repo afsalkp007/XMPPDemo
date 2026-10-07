@@ -69,13 +69,6 @@ nonisolated struct Contact: Identifiable, Equatable, Hashable, Sendable {
         return Double(hash % 360) / 360.0
     }
 
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(jid)
-    }
-
-    static func == (lhs: Contact, rhs: Contact) -> Bool {
-        lhs.jid == rhs.jid
-    }
 }
 
 // MARK: - SwiftData Persistence Record

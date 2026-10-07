@@ -15,7 +15,7 @@ final class ConversationListViewModel {
     var filteredContacts: [Contact] {
         let sorted = contacts.sorted {
             presenceOrder($0.presenceStatus) < presenceOrder($1.presenceStatus)
-        }
+        }.filter { $0.jid != env.myBareJID }
         guard !searchQuery.isEmpty else { return sorted }
         return sorted.filter {
             $0.displayName.localizedCaseInsensitiveContains(searchQuery) ||

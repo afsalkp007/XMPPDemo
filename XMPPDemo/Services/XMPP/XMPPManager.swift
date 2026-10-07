@@ -52,6 +52,9 @@ actor XMPPManager {
     // Pending IQ callbacks keyed by stanza id
     private var iqCallbacks: [String: CheckedContinuation<XMPPElement, Error>] = [:]
 
+    // Track outgoing subscriptions to prevent infinite loops when auto-accepting
+    private var pendingSubscriptions: Set<String> = []
+
     // MARK: - Init
 
     init() {
@@ -129,6 +132,7 @@ actor XMPPManager {
     func addContact(jid: String) {
         guard phase == .active else { return }
         let bare = bareJID(jid)
+        pendingSubscriptions.insert(bare)
         send("<presence type=\"subscribe\" to=\"\(escapeXML(bare))\"/>")
     }
 
@@ -342,7 +346,8 @@ actor XMPPManager {
            query.attributes["xmlns"] == "jabber:iq:roster" {
             let updated = query.children(named: "item").compactMap { item -> Contact? in
                 guard let jid = item.attributes["jid"] else { return nil }
-                return Contact(jid: jid, name: item.attributes["name"] ?? "", presenceStatus: .offline)
+                let currentPresence = self.contacts[jid]?.presenceStatus ?? .offline
+                return Contact(jid: jid, name: item.attributes["name"] ?? "", presenceStatus: currentPresence)
             }
             updated.forEach { contacts[$0.jid] = $0 }
             let contactsArray = Array(contacts.values)
@@ -365,14 +370,21 @@ actor XMPPManager {
         guard bare != myBareJID else { return }
 
         if type == "subscribe" {
-            // Auto-accept and subscribe back for two-way presence
+            // Auto-accept
             send("<presence type=\"subscribed\" to=\"\(escapeXML(bare))\"/>")
-            send("<presence type=\"subscribe\" to=\"\(escapeXML(bare))\"/>")
+            
+            // Subscribe back for two-way presence if we haven't already
+            if !pendingSubscriptions.contains(bare) {
+                pendingSubscriptions.insert(bare)
+                send("<presence type=\"subscribe\" to=\"\(escapeXML(bare))\"/>")
+            }
+            
+            sendPresence() // Force broadcast
             return
         }
 
         if type == "subscribed" || type == "unsubscribed" {
-            // Server acknowledges subscription states
+            sendPresence() // Force broadcast
             return
         }
 
