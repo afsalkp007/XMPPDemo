@@ -54,9 +54,11 @@ final class AppEnvironment {
         Task { [weak self] in
             guard let self else { return }
             for await state in xmpp.connectionState {
+                print("[XMPP] connectionState → \(state)")
                 self.connectionState = state
                 self.isLoggedIn = state.isConnected
             }
+            print("[XMPP] connectionState stream ended")
         }
     }
 
@@ -64,8 +66,75 @@ final class AppEnvironment {
 
     func login(jid: String, password: String, host: String? = nil) async throws {
         try await connectUseCase.execute(jid: jid, password: password, host: host)
-        self.myBareJID = jid.components(separatedBy: "/").first ?? jid
-        KeychainHelper.save(jid: jid, password: password)
+
+        // Wait for connectionState — kept up-to-date by the init Task that owns
+        // the AsyncStream — to reach a terminal state.
+        //
+        // We use withObservationTracking (iOS 17 Observation framework) to react
+        // to every @Observable connectionState change event-driven, with no polling.
+        //
+        // seenTransition: ignore the initial .disconnected idle value; only treat
+        // .disconnected as an error after we've seen .connecting (real attempt started).
+        var seenTransition = false
+        try await waitForConnection(jid: jid, password: password, seenTransition: &seenTransition)
+    }
+
+    /// Recursively waits for `connectionState` to reach `.connected` or a terminal
+    /// failure, using `withObservationTracking` for event-driven observation.
+    private func waitForConnection(
+        jid: String,
+        password: String,
+        seenTransition: inout Bool,
+        deadline: Date = Date.now.addingTimeInterval(30)
+    ) async throws {
+        guard Date.now < deadline else {
+            print("[XMPP] waitForConnection: TIMEOUT")
+            throw XMPPError.timeout
+        }
+
+        print("[XMPP] waitForConnection: checking state = \(connectionState), seenTransition=\(seenTransition)")
+
+        // Check current state first.
+        switch connectionState {
+        case .connected:
+            print("[XMPP] waitForConnection: ✅ connected")
+            myBareJID = jid.components(separatedBy: "/").first ?? jid
+            KeychainHelper.save(jid: jid, password: password)
+            return
+
+        case .failed(let err):
+            print("[XMPP] waitForConnection: ❌ failed — \(err)")
+            throw XMPPError.connectionFailed(err)
+
+        case .disconnected:
+            if seenTransition {
+                // We were connecting but the server dropped us.
+                print("[XMPP] waitForConnection: ❌ disconnected after transition")
+                throw XMPPError.disconnected
+            }
+            // Still the initial idle value — fall through and wait for next change.
+            print("[XMPP] waitForConnection: still idle .disconnected, waiting…")
+
+        case .connecting, .reconnecting:
+            seenTransition = true
+            print("[XMPP] waitForConnection: in-progress (\(connectionState)), waiting…")
+        }
+
+        // Suspend until connectionState changes, then re-evaluate.
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            // withObservationTracking fires onChange exactly once when any tracked
+            // property (connectionState here) is mutated.
+            withObservationTracking {
+                _ = self.connectionState   // register the dependency
+            } onChange: {
+                print("[XMPP] withObservationTracking: onChange fired")
+                cont.resume()              // wake up on next change
+            }
+        }
+
+        // Recurse (tail-call style) to re-check the updated value.
+        try await waitForConnection(jid: jid, password: password,
+                                    seenTransition: &seenTransition, deadline: deadline)
     }
 
     func logout() async {

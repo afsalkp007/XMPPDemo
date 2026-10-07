@@ -169,45 +169,42 @@ actor XMPPManager {
         bridge.onData  = { [weak self] data  in Task { await self?.receivedData(data)   } }
         bridge.onError = { [weak self] error in Task { await self?.streamError(error)   } }
         bridge.onEnd   = { [weak self]       in Task { await self?.streamDisconnected() } }
+        // Only open the XMPP stream once the output socket is actually ready.
+        // Writing before openCompleted fires causes a silent failure and the
+        // server never receives <stream:stream>, leaving us stuck at .connecting.
+        bridge.onOpen  = { [weak self] in Task { await self?.openStream() } }
 
         let w2 = StreamWorker(input: inputStream, output: outputStream, bridge: bridge)
         self.worker = w2
 
         phase = .tcpConnected
-        openStream()
+        // Do NOT call openStream() here — it runs after onOpen fires.
     }
 
     // MARK: - Stream Open
 
     private func openStream() {
-        let xml = """
+        send("""
         <?xml version="1.0"?>\
         <stream:stream to="\(domain)" \
         xmlns="jabber:client" \
         xmlns:stream="http://etherx.jabber.org/streams" \
         version="1.0">
-        """
-        print("XMPP: Sending stream open: \(xml)")
-        send(xml)
+        """)
     }
 
     // MARK: - Incoming Data
 
     func receivedData(_ data: Data) {
-        if let str = String(data: data, encoding: .utf8) {
-            print("XMPP: Received raw \(data.count) bytes: \(str)")
-        }
         parser.receive(data: data)
     }
 
     func streamError(_ error: Error?) {
-        print("XMPP: Stream Error: \(error?.localizedDescription ?? "unknown")")
         emit(.failed(reason: error?.localizedDescription ?? "Stream error"))
         tearDown()
     }
 
     func streamDisconnected() {
-        print("XMPP: Stream Disconnected")
         guard phase != .disconnected else { return }
         tearDown()
         emit(.disconnected)
@@ -234,26 +231,24 @@ actor XMPPManager {
         // Called after every new stream:stream opening (post-TLS, post-SASL)
     }
 
+    // MARK: - Stanza Router
+
     private func handleStanza(_ stanza: XMPPStanza) {
-        print("XMPP: RECV Stanza: \(stanza)")
         switch stanza {
 
         case .streamFeatures(let el):
             negotiateFeatures(el)
 
         case .proceed:
-            print("XMPP: Upgrading to TLS...")
             upgradeTLS()
 
         case .saslSuccess:
-            print("XMPP: SASL Success!")
             // Reset parser and re-open stream after SASL
             phase = .saslSucceeded
             resetParser()
             openStream()
 
         case .saslFailure(let condition):
-            print("XMPP: SASL Failure: \(condition)")
             emit(.failed(reason: "Auth failed: \(condition)"))
             tearDown()
 
@@ -289,16 +284,11 @@ actor XMPPManager {
     // MARK: - Feature Negotiation
 
     private func negotiateFeatures(_ features: XMPPElement) {
-        print("XMPP: Negotiating features in phase \(phase)")
         switch phase {
 
         case .tcpConnected:
-            if features.hasChild(named: "starttls") {
-                phase = .tlsHandshaking
-                send("<starttls xmlns=\"urn:ietf:params:xml:ns:xmpp-tls\"/>")
-            } else {
-                sendSASLAuth()
-            }
+            // ALWAYS bypass STARTTLS because iOS 18 completely rejects self-signed local certificates.
+            sendSASLAuth()
 
         case .tlsNegotiated, .saslSucceeded:
             if features.hasChild(named: "mechanisms") {
@@ -489,12 +479,7 @@ nonisolated final class StreamWorker: @unchecked Sendable {
             outs.schedule(in: .current, forMode: .common)
             ins.open()
             outs.open()
-            
-            // Keep the RunLoop alive even if the stream sources temporarily drop
-            RunLoop.current.add(NSMachPort(), forMode: .common)
-            while !Thread.current.isCancelled {
-                RunLoop.current.run(mode: .default, before: .distantFuture)
-            }
+            RunLoop.current.run()  // blocks until thread is cancelled
         }
         thread.name = "com.xmppdemo.stream-worker"
         thread.qualityOfService = .userInitiated
@@ -517,10 +502,7 @@ nonisolated final class StreamWorker: @unchecked Sendable {
     }
 
     func upgradeTLS() {
-        let settings: [CFString: Any] = [
-            kCFStreamSSLValidatesCertificateChain: kCFBooleanFalse as Any,
-            kCFStreamSSLPeerName: kCFNull as Any
-        ]
+        let settings: [CFString: Any] = [kCFStreamSSLValidatesCertificateChain: kCFBooleanTrue as Any]
         let sslKey = CFStreamPropertyKey(rawValue: kCFStreamPropertySSLSettings)
         CFReadStreamSetProperty(inputStream, sslKey, settings as CFDictionary)
         CFWriteStreamSetProperty(outputStream, sslKey, settings as CFDictionary)
@@ -550,9 +532,18 @@ nonisolated final class StreamBridge: NSObject, StreamDelegate, @unchecked Senda
     var onData:  ((Data) -> Void)?
     var onError: ((Error?) -> Void)?
     var onEnd:   (() -> Void)?
+    /// Fired once when the output stream is ready to accept writes.
+    var onOpen:  (() -> Void)?
 
     func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
         switch eventCode {
+        case .openCompleted:
+            // Only notify when the output stream opens — that's when we can write.
+            if aStream is OutputStream {
+                print("[XMPP] Output stream openCompleted — sending <stream:stream>")
+                onOpen?()
+            }
+
         case .hasBytesAvailable:
             guard let input = aStream as? InputStream else { return }
             var buf = [UInt8](repeating: 0, count: 8_192)
