@@ -127,6 +127,12 @@ nonisolated final class XMPPStreamParser: NSObject, XMLParserDelegate {
 
     /// Removes and returns the next complete XML stanza from `textBuffer`, or nil if incomplete.
     private func extractNextStanza() -> String? {
+        // Trim ONLY leading whitespace (Ejabberd often sends newlines between stanzas).
+        // Do NOT trim trailing whitespace, as it might belong to an incomplete text node.
+        while let first = textBuffer.first, first.isWhitespace {
+            textBuffer.removeFirst()
+        }
+        
         guard textBuffer.hasPrefix("<"), !textBuffer.hasPrefix("</") else { return nil }
 
         var depth = 0

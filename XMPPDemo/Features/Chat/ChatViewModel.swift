@@ -117,18 +117,28 @@ final class ChatViewModel {
     // MARK: - Subscriptions
 
     private func subscribeToMessages() {
-        let t = Task { [weak self] in
+        let t1 = Task { [weak self] in
             guard let self else { return }
-            for await notification in NotificationCenter.default.notifications(named: .xmppInboundMessage) {
+            for await notification in NotificationCenter.default.notifications(named: .didInsertMessage) {
                 guard let message = notification.userInfo?["message"] as? Message else { continue }
                 let peerJID = self.contact.jid
                 guard message.fromJID == peerJID || message.toJID == peerJID else { continue }
                 self.messages.append(message)
                 self.isTyping = false
-                Task { try? await self.env.messageStore.insert(message) }
             }
         }
-        taskBag.tasks.append(t)
+        
+        let t2 = Task { [weak self] in
+            guard let self else { return }
+            for await notification in NotificationCenter.default.notifications(named: .xmppMessageDelivered) {
+                guard let receiptID = notification.userInfo?["messageID"] as? String else { continue }
+                if let idx = self.messages.firstIndex(where: { $0.id == receiptID }) {
+                    self.messages[idx].deliveryStatus = .delivered
+                }
+            }
+        }
+        
+        taskBag.tasks.append(contentsOf: [t1, t2])
     }
 
     private func subscribeToChatStates() {

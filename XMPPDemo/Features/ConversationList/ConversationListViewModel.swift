@@ -40,20 +40,43 @@ final class ConversationListViewModel {
     // MARK: - Lifecycle (called from .task modifier — auto-cancelled on disappear)
 
     func start() async {
+        // Start listening to notifications FIRST so we don't miss anything
+        let subscriptionTask = Task {
+            async let r: () = subscribeToRosterUpdates()
+            async let p: () = subscribeToPresenceUpdates()
+            async let c: () = subscribeToConnectionState()
+            async let m: () = subscribeToMessages()
+            _ = await (r, p, c, m)
+        }
+        
+        // Give AppEnvironment a brief moment to finish saving the initial 
+        // burst of offline messages and roster pushes to the database
+        try? await Task.sleep(for: .milliseconds(300))
+        
         await loadLocalRoster()
-        // Subscribe concurrently — each for-await loop runs in its own task.
-        async let r: () = subscribeToRosterUpdates()
-        async let p: () = subscribeToPresenceUpdates()
-        async let c: () = subscribeToConnectionState()
-        async let m: () = subscribeToMessages()
-        _ = await (r, p, c, m)
+        
+        await subscriptionTask.value
+    }
+
+    func reload() async {
+        await loadLocalRoster()
     }
 
     // MARK: - Local Load
 
     private func loadLocalRoster() async {
         do {
-            contacts     = try await env.fetchRosterUseCase.execute()
+            let dbContacts = try await env.fetchRosterUseCase.execute()
+            
+            // Merge DB contacts with any live presence we might have already received
+            var merged = dbContacts
+            for i in merged.indices {
+                if let live = self.contacts.first(where: { $0.jid == merged[i].jid }), live.presenceStatus != .offline {
+                    merged[i].presenceStatus = live.presenceStatus
+                }
+            }
+            contacts = merged
+            
             lastMessages = try await env.messageHistoryUseCase.lastMessages(myBareJID: env.myBareJID)
         } catch {
             // Non-fatal on first launch (empty store)
@@ -68,9 +91,6 @@ final class ConversationListViewModel {
         for await notification in NotificationCenter.default.notifications(named: .xmppRosterUpdate) {
             guard let updated = notification.userInfo?["contacts"] as? [Contact] else { continue }
             contacts = updated
-            Task.detached(priority: .utility) { [store = env.rosterStore] in
-                try? await store.upsert(updated)
-            }
         }
     }
 
@@ -92,6 +112,15 @@ final class ConversationListViewModel {
         // re-consuming xmpp.connectionState (single-consumer AsyncStream).
         while !Task.isCancelled {
             connectionState = env.connectionState
+            
+            // Safety net: When we successfully connect, the server instantly flushes offline messages.
+            // We wait 0.5s for AppEnvironment to finish saving them to SwiftData, then reload the UI
+            // to guarantee no messages fell into the async timing gap during app launch.
+            if connectionState == .connected {
+                try? await Task.sleep(for: .milliseconds(500))
+                await loadLocalRoster()
+            }
+            
             // Suspend until env.connectionState changes, then loop.
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 withObservationTracking {
@@ -110,12 +139,9 @@ final class ConversationListViewModel {
     }
 
     private func processInbound() async {
-        for await notification in NotificationCenter.default.notifications(named: .xmppInboundMessage) {
+        for await notification in NotificationCenter.default.notifications(named: .didInsertMessage) {
             guard let message = notification.userInfo?["message"] as? Message else { continue }
             lastMessages[message.fromJID] = message
-            Task.detached(priority: .utility) { [store = env.messageStore] in
-                try? await store.insert(message)
-            }
         }
     }
 

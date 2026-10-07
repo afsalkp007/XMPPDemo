@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConversationListView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.scenePhase) private var scenePhase
     @State private var vm = ConversationListViewModel()
     @State private var showNewChat = false
     @State private var adHocContact: Contact? = nil
@@ -65,6 +66,11 @@ struct ConversationListView: View {
             }
         }
         .task { await vm.start() }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            if newPhase == .active {
+                Task { await vm.reload() }
+            }
+        }
         .sheet(isPresented: $showNewChat) {
             NewChatSheet { jid in
                 Task { await env.xmpp.addContact(jid: jid) }
@@ -254,7 +260,7 @@ private struct NewChatSheet: View {
                             .foregroundStyle(.textSecondary)
                             .padding(.horizontal, 4)
 
-                        TextField("user@domain.com", text: $jid)
+                        TextField("", text: $jid)
                             .font(.appBody)
                             .foregroundStyle(.textPrimary)
                             .autocapitalization(.none)

@@ -96,6 +96,7 @@ actor XMPPManager {
         <message type="chat" to="\(recipientJID)" id="\(msgID)" xml:lang="en">\
         <body>\(escapeXML(body))</body>\
         <active xmlns="http://jabber.org/protocol/chatstates"/>\
+        <request xmlns="urn:xmpp:receipts"/>\
         </message>
         """
         send(xml)
@@ -110,6 +111,15 @@ actor XMPPManager {
         send("""
         <message type="chat" to="\(recipientJID)">\
         <\(state.rawValue) xmlns="http://jabber.org/protocol/chatstates"/>\
+        </message>
+        """)
+    }
+
+    func sendReceipt(to recipientJID: String, originalID: String) {
+        guard phase == .active else { return }
+        send("""
+        <message to="\(recipientJID)">\
+        <received xmlns="urn:xmpp:receipts" id="\(originalID)"/>\
         </message>
         """)
     }
@@ -243,8 +253,22 @@ actor XMPPManager {
         case .saslChallenge:
             break  // PLAIN mechanism doesn't use challenges
 
-        case .message(let from, _, let id, let body):
+        case .message(let from, _, let id, let body, let requestReceipt, let receiptID):
+            // 1. Handle incoming delivery receipts
+            if let receiptID {
+                print("[DEBUG] Received delivery receipt for msg: \(receiptID)")
+                NotificationCenter.default.post(name: .xmppMessageDelivered, object: nil, userInfo: ["messageID": receiptID])
+            }
+            
+            // 2. Ignore messages with no body (they are just acks or chat states)
             guard !body.isEmpty else { return }
+            print("[DEBUG] XMPPManager parsed message stanza from \(from): \(body)")
+            
+            // 3. Send back a receipt if requested (XEP-0184)
+            if requestReceipt {
+                sendReceipt(to: from, originalID: id)
+            }
+            
             let msg = Message(
                 id: id, fromJID: bareJID(from), toJID: myBareJID,
                 body: body, timestamp: .now, deliveryStatus: .delivered, isOutgoing: false
@@ -389,7 +413,12 @@ actor XMPPManager {
         }
 
         let status = PresenceStatus.from(xmppShow: show, type: type)
-        contacts[bare]?.presenceStatus = status
+        if contacts[bare] == nil {
+            contacts[bare] = Contact(jid: bare, name: bare, presenceStatus: status)
+        } else {
+            contacts[bare]?.presenceStatus = status
+        }
+        
         NotificationCenter.default.post(name: .xmppPresenceUpdate, object: nil, userInfo: ["jid": bare, "status": status])
         let contactsArray = Array(contacts.values)
         NotificationCenter.default.post(name: .xmppRosterUpdate, object: nil, userInfo: ["contacts": contactsArray])
@@ -578,4 +607,6 @@ extension Notification.Name {
     static let xmppRosterUpdate = Notification.Name("xmppRosterUpdate")
     static let xmppPresenceUpdate = Notification.Name("xmppPresenceUpdate")
     static let xmppChatState = Notification.Name("xmppChatState")
+    static let didInsertMessage = Notification.Name("didInsertMessage")
+    static let xmppMessageDelivered = Notification.Name("xmppMessageDelivered")
 }

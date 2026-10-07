@@ -70,7 +70,7 @@ nonisolated enum XMPPStanza: Sendable {
     case saslChallenge(encoded: String)
 
     // Core stanzas
-    case message(from: String, to: String, id: String, body: String)
+    case message(from: String, to: String, id: String, body: String, requestReceipt: Bool, receiptID: String?)
     case presence(from: String, show: String?, status: String?, type: String?)
     case iq(id: String, type: String, element: XMPPElement)
 
@@ -107,6 +107,9 @@ nonisolated enum XMPPStanza: Sendable {
             return .saslChallenge(encoded: element.text)
 
         case "message":
+            let type = element[attribute: "type"] ?? "normal"
+            if type == "error" { return .unknown(element) } // Ignore bounced errors from offline users
+
             let from = element[attribute: "from"] ?? ""
             let to   = element[attribute: "to"]   ?? ""
             let id   = element[attribute: "id"]   ?? UUID().uuidString
@@ -119,8 +122,12 @@ nonisolated enum XMPPStanza: Sendable {
                 }
             }
 
+            // XEP-0184: Delivery Receipts
+            let requestReceipt = element.hasChild(named: "request")
+            let receiptID = element.child(named: "received")?[attribute: "id"]
+
             let body = element.child(named: "body")?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return .message(from: from, to: to, id: id, body: body)
+            return .message(from: from, to: to, id: id, body: body, requestReceipt: requestReceipt, receiptID: receiptID)
 
         case "presence":
             let from   = element[attribute: "from"] ?? ""

@@ -60,6 +60,53 @@ final class AppEnvironment {
             }
             print("[XMPP] connectionState stream ended")
         }
+
+        // ALWAYS listen for inbound messages and persist them to SwiftData.
+        // This prevents race conditions where offline messages are delivered
+        // by the server *before* the ViewModels have initialized.
+        Task { [weak self] in
+            for await notification in NotificationCenter.default.notifications(named: .xmppInboundMessage) {
+                guard let self else { return }
+                guard let message = notification.userInfo?["message"] as? Message else { continue }
+                
+                print("[DEBUG] AppEnvironment received inbound message: \(message.body) from \(message.fromJID)")
+                
+                try? await self.messageStore.insert(message)
+                
+                print("[DEBUG] AppEnvironment successfully saved message to DB!")
+                
+                // Post a secondary notification letting the UI know the DB has the message
+                NotificationCenter.default.post(name: .didInsertMessage, object: nil, userInfo: ["message": message])
+            }
+        }
+        
+        // ALWAYS listen for roster updates and persist them instantly
+        Task { [weak self] in
+            for await notification in NotificationCenter.default.notifications(named: .xmppRosterUpdate) {
+                guard let self else { return }
+                guard let contacts = notification.userInfo?["contacts"] as? [Contact] else { continue }
+                try? await self.rosterStore.upsert(contacts)
+            }
+        }
+        
+        // Listen for presence updates
+        Task { [weak self] in
+            for await notification in NotificationCenter.default.notifications(named: .xmppPresenceUpdate) {
+                guard let self else { return }
+                guard let jid = notification.userInfo?["jid"] as? String,
+                      let status = notification.userInfo?["status"] as? PresenceStatus else { continue }
+                try? await self.rosterStore.updatePresence(jid: jid, status: status)
+            }
+        }
+        
+        // Listen for delivery receipts
+        Task { [weak self] in
+            for await notification in NotificationCenter.default.notifications(named: .xmppMessageDelivered) {
+                guard let self else { return }
+                guard let messageID = notification.userInfo?["messageID"] as? String else { continue }
+                try? await self.messageStore.updateDeliveryStatus(id: messageID, status: .delivered)
+            }
+        }
     }
 
     // MARK: - Login / Logout

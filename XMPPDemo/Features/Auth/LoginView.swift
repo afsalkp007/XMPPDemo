@@ -101,7 +101,7 @@ struct LoginView: View {
                         .foregroundStyle(.textTertiary)
                         .frame(width: 20)
 
-                    TextField("user@domain.com", text: $vm.jid)
+                    TextField("", text: $vm.jid)
                         .font(.appBody)
                         .foregroundStyle(.textPrimary)
                         .textInputAutocapitalization(.never)

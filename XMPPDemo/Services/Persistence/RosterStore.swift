@@ -47,7 +47,15 @@ actor RosterStore {
         let descriptor = FetchDescriptor<ContactRecord>(
             sortBy: [SortDescriptor(\.name, order: .forward)]
         )
-        return try modelContext.fetch(descriptor).map { $0.toDomainModel() }
+        var contacts = try modelContext.fetch(descriptor).map { $0.toDomainModel() }
+        
+        // Always reset presence to offline on fresh launch, 
+        // as presence state is volatile and depends on the live XMPP session.
+        for i in contacts.indices {
+            contacts[i].presenceStatus = .offline
+        }
+        
+        return contacts
     }
 
     func contact(jid: String) throws -> Contact? {
