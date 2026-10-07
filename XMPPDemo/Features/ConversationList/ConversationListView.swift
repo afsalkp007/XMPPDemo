@@ -88,17 +88,16 @@ struct ConversationListView: View {
     // MARK: - Presence Pill
 
     private var presencePill: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(vm.connectionState.isConnected ? Color.presenceOnline : Color.presenceOffline)
-                .frame(width: 7, height: 7)
-            Text(env.myBareJID.components(separatedBy: "@").first ?? env.myBareJID)
-                .font(.appCaption)
-                .foregroundStyle(.textSecondary)
+        Button(action: {}) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(vm.connectionState.isConnected ? Color.presenceOnline : Color.presenceOffline)
+                    .frame(width: 7, height: 7)
+                Text(env.myBareJID.components(separatedBy: "@").first ?? env.myBareJID)
+                    .font(.appCaption)
+                    .foregroundStyle(.textSecondary)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Capsule().fill(Color.bgElevated))
     }
 
     // MARK: - Contact List
