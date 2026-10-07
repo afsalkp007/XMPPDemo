@@ -25,13 +25,12 @@ struct ChatInputBar: View {
                         .padding(.vertical, 12)
                 }
 
-                TextEditor(text: $text)
+                TextField("", text: $text, axis: .vertical)
                     .font(.messageInput)
                     .foregroundStyle(.textPrimary)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 44, maxHeight: 120)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .lineLimit(1...5)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                     .focused($isFocused)
                     .onChange(of: text) { _, _ in onTextChange?() }
             }
