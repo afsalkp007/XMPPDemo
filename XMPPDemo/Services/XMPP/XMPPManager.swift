@@ -126,6 +126,12 @@ actor XMPPManager {
         send("<iq type=\"get\" id=\"\(id)\"><query xmlns=\"jabber:iq:roster\"/></iq>")
     }
 
+    func addContact(jid: String) {
+        guard phase == .active else { return }
+        let bare = bareJID(jid)
+        send("<presence type=\"subscribe\" to=\"\(escapeXML(bare))\"/>")
+    }
+
     // MARK: - TCP Connection
 
     private func openConnection(host: String, port: Int) throws {
@@ -357,6 +363,18 @@ actor XMPPManager {
     private func handlePresence(from: String, show: String?, type: String?) {
         let bare = bareJID(from)
         guard bare != myBareJID else { return }
+
+        if type == "subscribe" {
+            // Auto-accept and subscribe back for two-way presence
+            send("<presence type=\"subscribed\" to=\"\(escapeXML(bare))\"/>")
+            send("<presence type=\"subscribe\" to=\"\(escapeXML(bare))\"/>")
+            return
+        }
+
+        if type == "subscribed" || type == "unsubscribed" {
+            // Server acknowledges subscription states
+            return
+        }
 
         let status = PresenceStatus.from(xmppShow: show, type: type)
         contacts[bare]?.presenceStatus = status

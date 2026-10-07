@@ -14,7 +14,7 @@ final class ChatViewModel {
     var connectionState: ConnectionState = .disconnected
 
     // MARK: - Properties
-    let contact: Contact
+    var contact: Contact
     private let env: AppEnvironment
     @ObservationIgnored private let taskBag = TaskBag()
 
@@ -43,6 +43,7 @@ final class ChatViewModel {
         await loadHistory()
         subscribeToMessages()
         subscribeToChatStates()
+        subscribeToPresenceUpdates()
         subscribeToConnectionState()
     }
 
@@ -140,6 +141,19 @@ final class ChatViewModel {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     self.isTyping = (state == .composing)
                 }
+            }
+        }
+        taskBag.tasks.append(t)
+    }
+
+    private func subscribeToPresenceUpdates() {
+        let t = Task { [weak self] in
+            guard let self else { return }
+            for await notification in NotificationCenter.default.notifications(named: .xmppPresenceUpdate) {
+                guard let jid = notification.userInfo?["jid"] as? String,
+                      let status = notification.userInfo?["status"] as? PresenceStatus else { continue }
+                guard jid == self.contact.jid else { continue }
+                self.contact.presenceStatus = status
             }
         }
         taskBag.tasks.append(t)

@@ -67,6 +67,7 @@ struct ConversationListView: View {
         .task { await vm.start() }
         .sheet(isPresented: $showNewChat) {
             NewChatSheet { jid in
+                Task { await env.xmpp.addContact(jid: jid) }
                 let contact = Contact(jid: jid, name: "", presenceStatus: .offline)
                 adHocContact = contact
                 showNewChat = false
