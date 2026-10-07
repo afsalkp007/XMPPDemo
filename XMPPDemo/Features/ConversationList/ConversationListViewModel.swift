@@ -69,10 +69,17 @@ final class ConversationListViewModel {
             let dbContacts = try await env.fetchRosterUseCase.execute()
             
             // Merge DB contacts with any live presence we might have already received
+            // Use env.xmpp.getActiveContacts() as the absolute source of truth for the live session
+            // in case the UI missed the initial broadcast notification while mounting.
             var merged = dbContacts
+            let liveSessionContacts = await env.xmpp.getActiveContacts()
+            
             for i in merged.indices {
-                if let live = self.contacts.first(where: { $0.jid == merged[i].jid }), live.presenceStatus != .offline {
+                let jid = merged[i].jid
+                if let live = liveSessionContacts.first(where: { $0.jid == jid }), live.presenceStatus != .offline {
                     merged[i].presenceStatus = live.presenceStatus
+                } else if let localLive = self.contacts.first(where: { $0.jid == jid }), localLive.presenceStatus != .offline {
+                    merged[i].presenceStatus = localLive.presenceStatus
                 }
             }
             contacts = merged

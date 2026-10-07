@@ -55,6 +55,12 @@ actor XMPPManager {
     // Track outgoing subscriptions to prevent infinite loops when auto-accepting
     private var pendingSubscriptions: Set<String> = []
 
+    // MARK: - Public State
+    
+    func getActiveContacts() -> [Contact] {
+        return Array(contacts.values)
+    }
+
     // MARK: - Init
 
     init() {
