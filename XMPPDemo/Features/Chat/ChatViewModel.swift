@@ -118,7 +118,8 @@ final class ChatViewModel {
     private func subscribeToMessages() {
         let t = Task { [weak self] in
             guard let self else { return }
-            for await message in env.xmpp.inboundMessages {
+            for await notification in NotificationCenter.default.notifications(named: .xmppInboundMessage) {
+                guard let message = notification.userInfo?["message"] as? Message else { continue }
                 let peerJID = self.contact.jid
                 guard message.fromJID == peerJID || message.toJID == peerJID else { continue }
                 self.messages.append(message)
@@ -132,7 +133,9 @@ final class ChatViewModel {
     private func subscribeToChatStates() {
         let t = Task { [weak self] in
             guard let self else { return }
-            for await (from, state) in env.xmpp.chatStates {
+            for await notification in NotificationCenter.default.notifications(named: .xmppChatState) {
+                guard let from = notification.userInfo?["from"] as? String,
+                      let state = notification.userInfo?["state"] as? ChatState else { continue }
                 guard from == self.contact.jid else { continue }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     self.isTyping = (state == .composing)

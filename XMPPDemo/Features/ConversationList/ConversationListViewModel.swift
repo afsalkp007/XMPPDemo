@@ -65,7 +65,8 @@ final class ConversationListViewModel {
     // or the parent task (from .task {}) is cancelled.
 
     private func subscribeToRosterUpdates() async {
-        for await updated in env.xmpp.rosterUpdates {
+        for await notification in NotificationCenter.default.notifications(named: .xmppRosterUpdate) {
+            guard let updated = notification.userInfo?["contacts"] as? [Contact] else { continue }
             contacts = updated
             Task.detached(priority: .utility) { [store = env.rosterStore] in
                 try? await store.upsert(updated)
@@ -74,7 +75,9 @@ final class ConversationListViewModel {
     }
 
     private func subscribeToPresenceUpdates() async {
-        for await (jid, status) in env.xmpp.presenceUpdates {
+        for await notification in NotificationCenter.default.notifications(named: .xmppPresenceUpdate) {
+            guard let jid = notification.userInfo?["jid"] as? String,
+                  let status = notification.userInfo?["status"] as? PresenceStatus else { continue }
             if let idx = contacts.firstIndex(where: { $0.jid == jid }) {
                 contacts[idx].presenceStatus = status
             }
@@ -101,7 +104,8 @@ final class ConversationListViewModel {
     }
 
     private func subscribeToInboundMessages() async {
-        for await message in env.xmpp.inboundMessages {
+        for await notification in NotificationCenter.default.notifications(named: .xmppInboundMessage) {
+            guard let message = notification.userInfo?["message"] as? Message else { continue }
             lastMessages[message.fromJID] = message
             Task.detached(priority: .utility) { [store = env.messageStore] in
                 try? await store.insert(message)

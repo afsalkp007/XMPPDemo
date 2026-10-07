@@ -14,17 +14,9 @@ actor XMPPManager {
     // MARK: - Public AsyncStreams
 
     private let (connectionStateStream, _connCont):    (AsyncStream<ConnectionState>,                               AsyncStream<ConnectionState>.Continuation)
-    private let (inboundMessageStream,  _msgCont):     (AsyncStream<Message>,                                       AsyncStream<Message>.Continuation)
-    private let (rosterUpdateStream,    _rosterCont):  (AsyncStream<[Contact]>,                                     AsyncStream<[Contact]>.Continuation)
-    private let (presenceUpdateStream,  _presenceCont):(AsyncStream<(jid: String, status: PresenceStatus)>,         AsyncStream<(jid: String, status: PresenceStatus)>.Continuation)
-    private let (chatStateStream,       _chatStateCont):(AsyncStream<(from: String, state: ChatState)>,             AsyncStream<(from: String, state: ChatState)>.Continuation)
 
-    // Callers subscribe to these
+    // Callers subscribe to this
     nonisolated let connectionState: AsyncStream<ConnectionState>
-    nonisolated let inboundMessages: AsyncStream<Message>
-    nonisolated let rosterUpdates:   AsyncStream<[Contact]>
-    nonisolated let presenceUpdates: AsyncStream<(jid: String, status: PresenceStatus)>
-    nonisolated let chatStates:      AsyncStream<(from: String, state: ChatState)>
 
     // MARK: - Connection Phase
 
@@ -64,22 +56,8 @@ actor XMPPManager {
 
     init() {
         let (cs, cc) = AsyncStream<ConnectionState>.makeStream()
-        let (ms, mc) = AsyncStream<Message>.makeStream()
-        let (rs, rc) = AsyncStream<[Contact]>.makeStream()
-        let (ps, pc) = AsyncStream<(jid: String, status: PresenceStatus)>.makeStream()
-        let (ts, tc) = AsyncStream<(from: String, state: ChatState)>.makeStream()
-
         connectionStateStream = cs; _connCont = cc
-        inboundMessageStream  = ms; _msgCont  = mc
-        rosterUpdateStream    = rs; _rosterCont = rc
-        presenceUpdateStream  = ps; _presenceCont = pc
-        chatStateStream       = ts; _chatStateCont = tc
-
         connectionState = cs
-        inboundMessages = ms
-        rosterUpdates   = rs
-        presenceUpdates = ps
-        chatStates      = ts
     }
 
     // MARK: - Public API
@@ -261,7 +239,7 @@ actor XMPPManager {
                 id: id, fromJID: bareJID(from), toJID: myBareJID,
                 body: body, timestamp: .now, deliveryStatus: .delivered, isOutgoing: false
             )
-            _msgCont.yield(msg)
+            NotificationCenter.default.post(name: .xmppInboundMessage, object: nil, userInfo: ["message": msg])
 
         case .presence(let from, let show, _, let type):
             handlePresence(from: from, show: show, type: type)
@@ -270,7 +248,7 @@ actor XMPPManager {
             handleIQ(id: id, type: type, element: element)
 
         case .chatState(let from, let state):
-            _chatStateCont.yield((from: bareJID(from), state: state))
+            NotificationCenter.default.post(name: .xmppChatState, object: nil, userInfo: ["from": bareJID(from), "state": state])
 
         case .streamError(let condition):
             emit(.failed(reason: "Stream error: \(condition)"))
@@ -361,7 +339,8 @@ actor XMPPManager {
                 return Contact(jid: jid, name: item.attributes["name"] ?? "", presenceStatus: .offline)
             }
             updated.forEach { contacts[$0.jid] = $0 }
-            _rosterCont.yield(Array(contacts.values))
+            let contactsArray = Array(contacts.values)
+            NotificationCenter.default.post(name: .xmppRosterUpdate, object: nil, userInfo: ["contacts": contactsArray])
             return
         }
 
@@ -381,8 +360,9 @@ actor XMPPManager {
 
         let status = PresenceStatus.from(xmppShow: show, type: type)
         contacts[bare]?.presenceStatus = status
-        _presenceCont.yield((jid: bare, status: status))
-        _rosterCont.yield(Array(contacts.values))
+        NotificationCenter.default.post(name: .xmppPresenceUpdate, object: nil, userInfo: ["jid": bare, "status": status])
+        let contactsArray = Array(contacts.values)
+        NotificationCenter.default.post(name: .xmppRosterUpdate, object: nil, userInfo: ["contacts": contactsArray])
     }
 
     // MARK: - Utilities
@@ -560,4 +540,11 @@ nonisolated final class StreamBridge: NSObject, StreamDelegate, @unchecked Senda
             break
         }
     }
+}
+
+extension Notification.Name {
+    static let xmppInboundMessage = Notification.Name("xmppInboundMessage")
+    static let xmppRosterUpdate = Notification.Name("xmppRosterUpdate")
+    static let xmppPresenceUpdate = Notification.Name("xmppPresenceUpdate")
+    static let xmppChatState = Notification.Name("xmppChatState")
 }
