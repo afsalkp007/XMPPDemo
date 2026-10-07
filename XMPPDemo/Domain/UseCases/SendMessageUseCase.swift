@@ -18,6 +18,7 @@ nonisolated struct SendMessageUseCase {
 
         let message = try await xmpp.sendMessage(to: recipientJID, body: trimmed)
         try await messageStore.insert(message)
+        NotificationCenter.default.post(name: .xmppOutboundMessage, object: nil, userInfo: ["message": message])
         return message
     }
 

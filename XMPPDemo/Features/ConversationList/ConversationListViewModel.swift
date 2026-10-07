@@ -45,7 +45,7 @@ final class ConversationListViewModel {
         async let r: () = subscribeToRosterUpdates()
         async let p: () = subscribeToPresenceUpdates()
         async let c: () = subscribeToConnectionState()
-        async let m: () = subscribeToInboundMessages()
+        async let m: () = subscribeToMessages()
         _ = await (r, p, c, m)
     }
 
@@ -103,13 +103,27 @@ final class ConversationListViewModel {
         }
     }
 
-    private func subscribeToInboundMessages() async {
+    private func subscribeToMessages() async {
+        async let i: () = processInbound()
+        async let o: () = processOutbound()
+        _ = await (i, o)
+    }
+
+    private func processInbound() async {
         for await notification in NotificationCenter.default.notifications(named: .xmppInboundMessage) {
             guard let message = notification.userInfo?["message"] as? Message else { continue }
             lastMessages[message.fromJID] = message
             Task.detached(priority: .utility) { [store = env.messageStore] in
                 try? await store.insert(message)
             }
+        }
+    }
+
+    private func processOutbound() async {
+        for await notification in NotificationCenter.default.notifications(named: .xmppOutboundMessage) {
+            guard let message = notification.userInfo?["message"] as? Message else { continue }
+            lastMessages[message.toJID] = message
+            // Outbound is already persisted by SendMessageUseCase, no need to insert here
         }
     }
 

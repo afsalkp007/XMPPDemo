@@ -574,6 +574,7 @@ nonisolated final class StreamBridge: NSObject, StreamDelegate, @unchecked Senda
 
 extension Notification.Name {
     static let xmppInboundMessage = Notification.Name("xmppInboundMessage")
+    static let xmppOutboundMessage = Notification.Name("xmppOutboundMessage")
     static let xmppRosterUpdate = Notification.Name("xmppRosterUpdate")
     static let xmppPresenceUpdate = Notification.Name("xmppPresenceUpdate")
     static let xmppChatState = Notification.Name("xmppChatState")
