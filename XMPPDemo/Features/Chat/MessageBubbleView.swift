@@ -73,7 +73,7 @@ struct MessageBubbleView: View {
 
     @ViewBuilder
     private func imageView(for url: URL) -> some View {
-        if InsecureURLSessionDelegate.allowsLocalCertificateException(for: url) {
+        if !LocalDevelopmentTLSDelegate.certificateExceptionHosts(for: url).isEmpty {
             InsecureAsyncImage(url: url)
         } else {
             AsyncImage(url: url) { phase in

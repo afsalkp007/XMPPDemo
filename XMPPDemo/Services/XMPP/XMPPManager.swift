@@ -9,7 +9,7 @@ import Foundation
 // Concurrency: actor isolation + StreamBridge for RunLoop→async bridging
 // Events:  AsyncStream-based (connectionStateStream, inboundMessageStream, etc.)
 
-actor XMPPManager {
+actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
 
     // MARK: - Public AsyncStreams
 
@@ -143,21 +143,8 @@ actor XMPPManager {
             throw XMPPError.connectionFailed("Server rejected upload slot request")
         }
         
-        guard let slot = response.child(named: "slot"),
-              let putNode = slot.child(named: "put"),
-              let getNode = slot.child(named: "get") else {
-            throw XMPPError.connectionFailed("Invalid upload slot response from server")
-        }
-        
-        let putStr = putNode.attributes["url"] ?? putNode.text
-        let getStr = getNode.attributes["url"] ?? getNode.text
-        
-        guard let putURL = URL(string: putStr.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let getURL = URL(string: getStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw XMPPError.connectionFailed("Invalid upload slot URLs from server")
-        }
-        
-        return (putURL, getURL)
+        let slot = try HTTPUploadSlot(response: response)
+        return (slot.putURL, slot.getURL)
     }
 
     func sendChatState(_ state: ChatState, to recipientJID: String) {

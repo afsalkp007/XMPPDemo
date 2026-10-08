@@ -2,10 +2,14 @@ import Foundation
 import UIKit
 
 nonisolated struct MediaUploadUseCase {
-    private let xmpp: XMPPManager
+    typealias UploadPerformer = @Sendable (URLRequest, Data, Set<String>) async throws -> (Data, URLResponse)
 
-    init(xmpp: XMPPManager) {
+    private let xmpp: any XMPPUploadSlotRequesting
+    private let performUpload: UploadPerformer
+
+    init(xmpp: any XMPPUploadSlotRequesting, performUpload: UploadPerformer? = nil) {
         self.xmpp = xmpp
+        self.performUpload = performUpload ?? Self.defaultUpload
     }
 
     /// Compresses an image, requests an XEP-0363 slot, and uploads it via HTTP PUT.
@@ -27,12 +31,8 @@ nonisolated struct MediaUploadUseCase {
         
         // The bundled ejabberd config uses a self-signed certificate for its
         // local HTTPS upload endpoint. Keep that exception scoped to local hosts.
-        let allowedHosts = InsecureURLSessionDelegate.allowsLocalCertificateException(for: slot.putURL)
-            ? Set([slot.putURL.host?.lowercased()].compactMap { $0 })
-            : []
-        let delegate = InsecureURLSessionDelegate(allowedHosts: allowedHosts)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        let (responseData, response) = try await session.upload(for: request, from: data, delegate: delegate)
+        let allowedHosts = LocalDevelopmentTLSDelegate.certificateExceptionHosts(for: slot.putURL)
+        let (responseData, response) = try await performUpload(request, data, allowedHosts)
         
         guard let httpRes = response as? HTTPURLResponse else {
             throw XMPPError.connectionFailed("Upload server returned an invalid response")
@@ -46,5 +46,15 @@ nonisolated struct MediaUploadUseCase {
         
         // 3. Return the public URL for the message body
         return slot.getURL
+    }
+
+    private static func defaultUpload(
+        request: URLRequest,
+        data: Data,
+        allowedHosts: Set<String>
+    ) async throws -> (Data, URLResponse) {
+        let delegate = LocalDevelopmentTLSDelegate(allowedHosts: allowedHosts)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        return try await session.upload(for: request, from: data, delegate: delegate)
     }
 }

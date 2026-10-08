@@ -2,10 +2,10 @@ import Foundation
 
 /// Sends an outgoing message and persists it immediately (optimistic local insert).
 nonisolated struct SendMessageUseCase {
-    private let xmpp:         XMPPManager
+    private let xmpp:         any XMPPMessageSending
     private let messageStore: MessageStore
 
-    init(xmpp: XMPPManager, messageStore: MessageStore) {
+    init(xmpp: any XMPPMessageSending, messageStore: MessageStore) {
         self.xmpp         = xmpp
         self.messageStore = messageStore
     }
