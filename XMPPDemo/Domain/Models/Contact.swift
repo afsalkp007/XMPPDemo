@@ -23,7 +23,7 @@ nonisolated enum PresenceStatus: String, Codable, Equatable, Sendable {
 
     /// Derives presence from the optional XMPP `<show>` text content.
     static func from(xmppShow: String?, type: String?) -> PresenceStatus {
-        if type == "unavailable" { return .offline }
+        if type == "unavailable" || type == "error" { return .offline }
         switch xmppShow?.lowercased() {
         case "away": return .away
         case "dnd":  return .dnd

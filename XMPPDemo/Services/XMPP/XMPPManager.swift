@@ -28,6 +28,8 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
         case saslSent           // SASL <auth> sent
         case saslSucceeded      // <success> received, new stream:stream sent
         case binding            // <iq bind> sent
+        case smEnabling         // <enable> sent
+        case smResuming         // <resume> sent
         case active             // Fully operational
     }
 
@@ -57,6 +59,13 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
 
     // Heartbeat Task
     private var pingTask: Task<Void, Never>?
+
+    // XEP-0198 Stream Management
+    private var serverSupportsSM: Bool = false
+    private var smID: String?
+    private var smInH: UInt32 = 0
+    private var smOutH: UInt32 = 0
+    private var unackedStanzas: [(h: UInt32, xml: String)] = []
 
     // MARK: - Public State
     
@@ -91,7 +100,17 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
 
     func disconnect() {
         guard phase != .disconnected else { return }
+        if phase == .active {
+            send("<presence type='unavailable'/>")
+        }
         send("</stream:stream>")
+        
+        // Clear SM state on explicit logout
+        smID = nil
+        smInH = 0
+        smOutH = 0
+        unackedStanzas.removeAll()
+        
         tearDown()
         emit(.disconnected)
     }
@@ -273,6 +292,14 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
     // MARK: - Stanza Router
 
     private func handleStanza(_ stanza: XMPPStanza) {
+        // XEP-0198: Increment incoming stanza count for ackable stanzas
+        switch stanza {
+        case .message, .presence, .iq, .chatState:
+            if smID != nil { smInH &+= 1 }
+        default:
+            break
+        }
+
         switch stanza {
 
         case .streamFeatures(let el):
@@ -329,6 +356,36 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
             emit(.failed(reason: "Stream error: \(condition)"))
             tearDown()
 
+        case .smEnabled(let id, _):
+            self.smID = id
+            self.phase = .active
+            onSessionReady()
+            
+        case .smResumed(_, let h):
+            handleSMAck(h)
+            self.phase = .active
+            onSessionReady()
+            
+            // Resend unacked stanzas
+            for unacked in unackedStanzas {
+                worker?.write(unacked.xml)
+            }
+            
+        case .smFailed:
+            self.smID = nil
+            self.unackedStanzas.removeAll()
+            
+            if phase == .smResuming {
+                // Resume failed, fallback to normal binding
+                bindResource()
+            }
+            
+        case .smAckRequest:
+            send("<a xmlns='urn:xmpp:sm:3' h='\(smInH)'/>")
+            
+        case .smAck(let h):
+            handleSMAck(h)
+
         case .unknown:
             break
         }
@@ -344,8 +401,14 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
             sendSASLAuth()
 
         case .tlsNegotiated, .saslSucceeded:
+            serverSupportsSM = features.hasChild(named: "sm")
+            
             if features.hasChild(named: "mechanisms") {
                 sendSASLAuth()
+            } else if serverSupportsSM, let smID = smID {
+                // If we have an existing session, resume it instead of binding
+                phase = .smResuming
+                send("<resume xmlns='urn:xmpp:sm:3' h='\(smInH)' previd='\(escapeXML(smID))'/>")
             } else if features.hasChild(named: "bind") {
                 bindResource()
             }
@@ -399,11 +462,14 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
            let bind = element.child(named: "bind"),
            let jidEl = bind.child(named: "jid") {
             myFullJID = jidEl.text
-            phase = .active
-            emit(.connected)
-            sendPresence()
-            requestRoster()
-            startPingTimer()
+            
+            if serverSupportsSM {
+                phase = .smEnabling
+                send("<enable xmlns='urn:xmpp:sm:3' resume='true'/>")
+            } else {
+                phase = .active
+                onSessionReady()
+            }
             return
         }
 
@@ -517,9 +583,38 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
         _connCont.yield(state)
     }
 
+    // MARK: - Stream Management Helpers
+    
+    private func onSessionReady() {
+        emit(.connected)
+        sendPresence()
+        requestRoster()
+        startPingTimer()
+    }
+    
+    private func handleSMAck(_ h: UInt32) {
+        unackedStanzas.removeAll { $0.h <= h }
+    }
+
+    // MARK: - Sending
+
     @discardableResult
     private func send(_ xml: String) -> Bool {
-        worker?.write(xml) ?? false
+        let success = worker?.write(xml) ?? false
+        
+        // Track unacknowledged stanzas if Stream Management is active
+        if success, phase == .active, smID != nil {
+            let isAckable = xml.hasPrefix("<message") || xml.hasPrefix("<iq") || xml.hasPrefix("<presence")
+            if isAckable {
+                smOutH &+= 1
+                unackedStanzas.append((h: smOutH, xml: xml))
+                
+                // Request ack
+                worker?.write("<r xmlns='urn:xmpp:sm:3'/>")
+            }
+        }
+        
+        return success
     }
 
     private func tearDown() {

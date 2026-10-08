@@ -77,6 +77,13 @@ nonisolated enum XMPPStanza: Sendable {
     // XEP-0085 Chat States
     case chatState(from: String, state: ChatState)
 
+    // XEP-0198 Stream Management
+    case smEnabled(id: String, resume: Bool)
+    case smResumed(previd: String, h: UInt32)
+    case smFailed
+    case smAckRequest
+    case smAck(h: UInt32)
+
     case unknown(XMPPElement)
 
     // MARK: - Parser Factory
@@ -105,6 +112,12 @@ nonisolated enum XMPPStanza: Sendable {
 
         case "challenge":
             return .saslChallenge(encoded: element.text)
+            
+        case "enabled", "resumed", "failed", "r", "a":
+            if let smStanza = parseStreamManagement(localName, element: element) {
+                return smStanza
+            }
+            return .unknown(element)
 
         case "message":
             let type = element[attribute: "type"] ?? "normal"
@@ -143,6 +156,30 @@ nonisolated enum XMPPStanza: Sendable {
 
         default:
             return .unknown(element)
+        }
+    }
+
+    private static func parseStreamManagement(_ localName: String, element: XMPPElement) -> XMPPStanza? {
+        guard element.attributes.values.contains("urn:xmpp:sm:3") else { return nil }
+
+        switch localName {
+        case "enabled":
+            let id = element.attributes["id"] ?? ""
+            let resume = element.attributes["resume"] == "true" || element.attributes["resume"] == "1"
+            return .smEnabled(id: id, resume: resume)
+        case "resumed":
+            let previd = element.attributes["previd"] ?? ""
+            let h = UInt32(element.attributes["h"] ?? "0") ?? 0
+            return .smResumed(previd: previd, h: h)
+        case "failed":
+            return .smFailed
+        case "r":
+            return .smAckRequest
+        case "a":
+            let h = UInt32(element.attributes["h"] ?? "0") ?? 0
+            return .smAck(h: h)
+        default:
+            return nil
         }
     }
 }
