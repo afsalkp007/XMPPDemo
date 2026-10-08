@@ -10,7 +10,7 @@ final class XMPPStanzaTests: XCTestCase {
             text: ""
         )
 
-        guard case let .message(from, to, id, body, requestsReceipt, receiptID) = XMPPStanza.parse(message) else {
+        guard case let .message(from, to, id, body, requestsReceipt, receiptID, e2eeCiphertext) = XMPPStanza.parse(message) else {
             return XCTFail("Expected a chat message")
         }
 
@@ -20,6 +20,7 @@ final class XMPPStanzaTests: XCTestCase {
         XCTAssertEqual(body, "Hello")
         XCTAssertFalse(requestsReceipt)
         XCTAssertNil(receiptID)
+        XCTAssertNil(e2eeCiphertext)
     }
 
     func testParsesDeliveryReceipt() {
@@ -30,7 +31,7 @@ final class XMPPStanzaTests: XCTestCase {
             text: ""
         )
 
-        guard case let .message(_, _, _, body, _, receiptID) = XMPPStanza.parse(message) else {
+        guard case let .message(_, _, _, body, _, receiptID, _) = XMPPStanza.parse(message) else {
             return XCTFail("Expected a receipt message")
         }
 
@@ -133,5 +134,43 @@ final class XMPPStanzaTests: XCTestCase {
         let el = XMPPElement(name: "a", attributes: ["xmlns": "urn:xmpp:sm:3", "h": "5"], children: [], text: "")
         guard case let .smAck(h) = XMPPStanza.parse(el) else { return XCTFail() }
         XCTAssertEqual(h, 5)
+    }
+    
+    func testParsesE2EEPresence() {
+        let e2eeChild = XMPPElement(name: "e2ee-pubkey", attributes: ["xmlns": "urn:xmppdemo:e2ee"], children: [], text: "base64_pub_key")
+        let presence = XMPPElement(
+            name: "presence",
+            attributes: ["from": "bob@jabber.org"],
+            children: [e2eeChild],
+            text: ""
+        )
+
+        guard case let .presence(from, _, _, _, e2eePubKey) = XMPPStanza.parse(presence) else {
+            return XCTFail("Expected a presence stanza")
+        }
+
+        XCTAssertEqual(from, "bob@jabber.org")
+        XCTAssertEqual(e2eePubKey, "base64_pub_key")
+    }
+
+    func testParsesE2EEMessage() {
+        let bodyChild = XMPPElement(name: "body", attributes: [:], children: [], text: "Encrypted!")
+        let e2eeChild = XMPPElement(name: "e2ee", attributes: ["xmlns": "urn:xmppdemo:e2ee"], children: [], text: "base64_ciphertext")
+        let message = XMPPElement(
+            name: "message",
+            attributes: ["from": "bob@jabber.org", "to": "alice@jabber.org", "id": "123"],
+            children: [bodyChild, e2eeChild],
+            text: ""
+        )
+
+        guard case let .message(from, to, id, body, _, _, e2eeCiphertext) = XMPPStanza.parse(message) else {
+            return XCTFail("Expected a message stanza")
+        }
+
+        XCTAssertEqual(from, "bob@jabber.org")
+        XCTAssertEqual(to, "alice@jabber.org")
+        XCTAssertEqual(id, "123")
+        XCTAssertEqual(body, "Encrypted!")
+        XCTAssertEqual(e2eeCiphertext, "base64_ciphertext")
     }
 }

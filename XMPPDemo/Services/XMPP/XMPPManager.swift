@@ -136,9 +136,22 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
     func sendMessage(to recipientJID: String, body: String) throws -> Message {
         guard phase == .active else { throw XMPPError.notConnected }
         let msgID = UUID().uuidString
+        let bareTo = bareJID(recipientJID)
+        
+        var bodyXML = "<body>\(escapeXML(body))</body>"
+        var e2eeXML = ""
+        
+        if let pubKey = contacts[bareTo]?.publicKey,
+           let payload = body.data(using: .utf8),
+           let (ciphertext, _) = try? CryptoService.shared.encrypt(payload: payload, recipientPublicKeyBase64: pubKey) {
+            bodyXML = "<body>E2EE Message. This client doesn't support decryption.</body>"
+            e2eeXML = "<e2ee xmlns=\"urn:xmppdemo:e2ee\">\(ciphertext)</e2ee>"
+        }
+        
         let xml = """
         <message type="chat" to="\(recipientJID)" id="\(msgID)" xml:lang="en">\
-        <body>\(escapeXML(body))</body>\
+        \(bodyXML)\
+        \(e2eeXML)\
         <active xmlns="http://jabber.org/protocol/chatstates"/>\
         <request xmlns="urn:xmpp:receipts"/>\
         </message>
@@ -205,6 +218,12 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
         var xml = "<presence>"
         if let show { xml += "<show>\(show)</show>" }
         if let s = statusText { xml += "<status>\(escapeXML(s))</status>" }
+        
+        // Append E2EE Public Key
+        if let pubKey = try? CryptoService.shared.getMyPublicKeyBase64() {
+            xml += "<e2ee-pubkey xmlns=\"urn:xmppdemo:e2ee\">\(pubKey)</e2ee-pubkey>"
+        }
+        
         xml += "</presence>"
         send(xml)
     }
@@ -337,30 +356,44 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
         case .saslChallenge:
             break  // PLAIN mechanism doesn't use challenges
 
-        case .message(let from, _, let id, let body, let requestReceipt, let receiptID):
+        case .message(let from, _, let id, let rawBody, let requestReceipt, let receiptID, let e2eeCiphertext):
             // 1. Handle incoming delivery receipts
             if let receiptID {
                 print("[DEBUG] Received delivery receipt for msg: \(receiptID)")
                 NotificationCenter.default.post(name: .xmppMessageDelivered, object: nil, userInfo: ["messageID": receiptID])
             }
             
-            // 2. Ignore messages with no body (they are just acks or chat states)
+            // 2. Decrypt E2EE Payload if present
+            var body = rawBody
+            let bareFrom = bareJID(from)
+            if let ciphertext = e2eeCiphertext, let senderPubKey = contacts[bareFrom]?.publicKey {
+                if let decryptedData = try? CryptoService.shared.decrypt(combinedBase64: ciphertext, senderPublicKeyBase64: senderPubKey),
+                   let decryptedString = String(data: decryptedData, encoding: .utf8) {
+                    body = decryptedString
+                } else {
+                    body = "⚠️ [Encrypted Message - Decryption Failed]"
+                }
+            } else if e2eeCiphertext != nil {
+                body = "⚠️ [Encrypted Message - Unknown Public Key]"
+            }
+            
+            // 3. Ignore messages with no body (they are just acks or chat states)
             guard !body.isEmpty else { return }
             print("[DEBUG] XMPPManager parsed message stanza from \(from): \(body)")
             
-            // 3. Send back a receipt if requested (XEP-0184)
+            // 4. Send back a receipt if requested (XEP-0184)
             if requestReceipt {
                 sendReceipt(to: from, originalID: id)
             }
             
             let msg = Message(
-                id: id, fromJID: bareJID(from), toJID: myBareJID,
+                id: id, fromJID: bareFrom, toJID: myBareJID,
                 body: body, timestamp: .now, deliveryStatus: .delivered, isOutgoing: false
             )
             NotificationCenter.default.post(name: .xmppInboundMessage, object: nil, userInfo: ["message": msg])
 
-        case .presence(let from, let show, _, let type):
-            handlePresence(from: from, show: show, type: type)
+        case .presence(let from, let show, let statusText, let type, let e2eePubKey):
+            handlePresence(from: from, show: show, statusText: statusText, type: type, e2eePubKey: e2eePubKey)
 
         case .iq(let id, let type, let element):
             handleIQ(id: id, type: type, element: element)
@@ -502,7 +535,8 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
             let updated = query.children(named: "item").compactMap { item -> Contact? in
                 guard let jid = item.attributes["jid"] else { return nil }
                 let currentPresence = self.contacts[jid]?.presenceStatus ?? .offline
-                return Contact(jid: jid, name: item.attributes["name"] ?? "", presenceStatus: currentPresence)
+                let currentPubKey = self.contacts[jid]?.publicKey
+                return Contact(jid: jid, name: item.attributes["name"] ?? "", presenceStatus: currentPresence, publicKey: currentPubKey)
             }
             updated.forEach { contacts[$0.jid] = $0 }
             let contactsArray = Array(contacts.values)
@@ -520,9 +554,18 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
 
     // MARK: - Presence Handling
 
-    private func handlePresence(from: String, show: String?, type: String?) {
+    private func handlePresence(from: String, show: String?, statusText: String?, type: String?, e2eePubKey: String?) {
         let bare = bareJID(from)
         guard bare != myBareJID else { return }
+
+        // Save public key if provided, regardless of presence type
+        if let pk = e2eePubKey {
+            if contacts[bare] == nil {
+                contacts[bare] = Contact(jid: bare, name: bare, presenceStatus: .offline, publicKey: pk)
+            } else {
+                contacts[bare]?.publicKey = pk
+            }
+        }
 
         if type == "subscribe" {
             // Auto-accept
@@ -545,12 +588,16 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
 
         let status = PresenceStatus.from(xmppShow: show, type: type)
         if contacts[bare] == nil {
-            contacts[bare] = Contact(jid: bare, name: bare, presenceStatus: status)
+            contacts[bare] = Contact(jid: bare, name: bare, presenceStatus: status, publicKey: e2eePubKey)
         } else {
             contacts[bare]?.presenceStatus = status
         }
         
-        NotificationCenter.default.post(name: .xmppPresenceUpdate, object: nil, userInfo: ["jid": bare, "status": status])
+        // Pass publicKey inside userInfo so ConversationListViewModel can update RosterStore
+        var userInfo: [AnyHashable: Any] = ["jid": bare, "status": status]
+        if let pk = e2eePubKey { userInfo["publicKey"] = pk }
+        
+        NotificationCenter.default.post(name: .xmppPresenceUpdate, object: nil, userInfo: userInfo)
         let contactsArray = Array(contacts.values)
         NotificationCenter.default.post(name: .xmppRosterUpdate, object: nil, userInfo: ["contacts": contactsArray])
     }

@@ -44,6 +44,7 @@ nonisolated struct Contact: Identifiable, Equatable, Hashable, Sendable {
     var presenceStatus: PresenceStatus
     var statusMessage: String?
     var lastSeen: Date?
+    var publicKey: String? // Base64 encoded P-256 public key
 
     // MARK: Derived
 
@@ -81,6 +82,7 @@ final class ContactRecord {
     var presenceStatusRaw: String
     var statusMessage: String?
     var lastSeen: Date?
+    var publicKey: String?
 
     init(jid: String, name: String = "", presenceStatus: PresenceStatus = .offline) {
         self.jid = jid
@@ -99,7 +101,8 @@ final class ContactRecord {
             name: name,
             presenceStatus: presenceStatus,
             statusMessage: statusMessage,
-            lastSeen: lastSeen
+            lastSeen: lastSeen,
+            publicKey: publicKey
         )
     }
 }

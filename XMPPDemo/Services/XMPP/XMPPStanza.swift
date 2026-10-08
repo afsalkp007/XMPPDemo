@@ -70,8 +70,8 @@ nonisolated enum XMPPStanza: Sendable {
     case saslChallenge(encoded: String)
 
     // Core stanzas
-    case message(from: String, to: String, id: String, body: String, requestReceipt: Bool, receiptID: String?)
-    case presence(from: String, show: String?, status: String?, type: String?)
+    case message(from: String, to: String, id: String, body: String, requestReceipt: Bool, receiptID: String?, e2eeCiphertext: String?)
+    case presence(from: String, show: String?, status: String?, type: String?, e2eePubKey: String?)
     case iq(id: String, type: String, element: XMPPElement)
 
     // XEP-0085 Chat States
@@ -140,14 +140,16 @@ nonisolated enum XMPPStanza: Sendable {
             let receiptID = element.child(named: "received")?[attribute: "id"]
 
             let body = element.child(named: "body")?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return .message(from: from, to: to, id: id, body: body, requestReceipt: requestReceipt, receiptID: receiptID)
+            let e2eeCiphertext = element.child(named: "e2ee")?.text
+            return .message(from: from, to: to, id: id, body: body, requestReceipt: requestReceipt, receiptID: receiptID, e2eeCiphertext: e2eeCiphertext)
 
         case "presence":
             let from   = element[attribute: "from"] ?? ""
             let type   = element[attribute: "type"]
             let show   = element.child(named: "show")?.text
             let status = element.child(named: "status")?.text
-            return .presence(from: from, show: show, status: status, type: type)
+            let e2eePubKey = element.child(named: "e2ee-pubkey")?.text
+            return .presence(from: from, show: show, status: status, type: type, e2eePubKey: e2eePubKey)
 
         case "iq":
             let id   = element[attribute: "id"]   ?? UUID().uuidString

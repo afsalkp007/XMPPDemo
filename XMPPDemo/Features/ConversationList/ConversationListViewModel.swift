@@ -105,11 +105,16 @@ final class ConversationListViewModel {
         for await notification in NotificationCenter.default.notifications(named: .xmppPresenceUpdate) {
             guard let jid = notification.userInfo?["jid"] as? String,
                   let status = notification.userInfo?["status"] as? PresenceStatus else { continue }
+            let publicKey = notification.userInfo?["publicKey"] as? String
+            
             if let idx = contacts.firstIndex(where: { $0.jid == jid }) {
                 contacts[idx].presenceStatus = status
+                if let pk = publicKey {
+                    contacts[idx].publicKey = pk
+                }
             }
             Task.detached(priority: .utility) { [store = env.rosterStore] in
-                try? await store.updatePresence(jid: jid, status: status)
+                try? await store.updatePresence(jid: jid, status: status, publicKey: publicKey)
             }
         }
     }

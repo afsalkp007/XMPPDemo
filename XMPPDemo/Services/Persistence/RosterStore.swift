@@ -31,13 +31,16 @@ actor RosterStore {
         try contacts.forEach { try upsert($0) }
     }
 
-    func updatePresence(jid: String, status: PresenceStatus) throws {
+    func updatePresence(jid: String, status: PresenceStatus, publicKey: String? = nil) throws {
         let descriptor = FetchDescriptor<ContactRecord>(
             predicate: #Predicate { $0.jid == jid }
         )
         guard let record = try modelContext.fetch(descriptor).first else { return }
         record.presenceStatus = status
         record.lastSeen = status == .offline ? .now : record.lastSeen
+        if let pk = publicKey {
+            record.publicKey = pk
+        }
         try modelContext.save()
     }
 
