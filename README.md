@@ -22,7 +22,7 @@ This project demonstrates a production-ready real-time messaging architecture, c
 
 ## 📱 Screenshots
 <img src="https://github.com/user-attachments/assets/eeb38d83-470b-40bb-b6ec-94c4b088201c" width="256" height="556" />
-<img src="https://github.com/user-attachments/assets/eaa8f366-e97c-4b14-b297-21601897f82b" width="256" height="556" />
+<img src="https://github.com/user-attachments/assets/12d76824-5a08-4111-a9cb-729420f41163" width="256" height="556" />
 <img src="https://github.com/user-attachments/assets/4f50ad68-1079-4fcc-a96f-463dcb1af3bc" width="256" height="556" />
 
 ## 🧠 Architecture Highlights
