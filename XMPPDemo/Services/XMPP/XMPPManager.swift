@@ -55,6 +55,9 @@ actor XMPPManager {
     // Track outgoing subscriptions to prevent infinite loops when auto-accepting
     private var pendingSubscriptions: Set<String> = []
 
+    // Heartbeat Task
+    private var pingTask: Task<Void, Never>?
+
     // MARK: - Public State
     
     func getActiveContacts() -> [Contact] {
@@ -368,6 +371,14 @@ actor XMPPManager {
             emit(.connected)
             sendPresence()
             requestRoster()
+            startPingTimer()
+            return
+        }
+
+        // Incoming Ping (XEP-0199)
+        if type == "get", element.hasChild(named: "ping") {
+            // Respond with a result
+            send("<iq type=\"result\" to=\"\(escapeXML(myBareJID.components(separatedBy: "@").last ?? domain))\" id=\"\(id)\"/>")
             return
         }
 
@@ -432,6 +443,44 @@ actor XMPPManager {
 
     // MARK: - Utilities
 
+    private func startPingTimer() {
+        pingTask?.cancel()
+        pingTask = Task { [weak self] in
+            await self?.pingLoop()
+        }
+    }
+
+    private func pingLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled else { break }
+            
+            let id = UUID().uuidString
+            send("<iq type=\"get\" id=\"\(id)\"><ping xmlns=\"urn:xmpp:ping\"/></iq>")
+            
+            do {
+                _ = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<XMPPElement, Error>) in
+                    self.iqCallbacks[id] = cont
+                    
+                    Task {
+                        try? await Task.sleep(for: .seconds(10))
+                        await self.timeoutPing(id: id)
+                    }
+                }
+            } catch {
+                print("[XMPP] Ping failed or timed out: \(error). Disconnecting.")
+                streamDisconnected()
+                break
+            }
+        }
+    }
+
+    private func timeoutPing(id: String) {
+        if let cont = iqCallbacks.removeValue(forKey: id) {
+            cont.resume(throwing: XMPPError.timeout)
+        }
+    }
+
     private func emit(_ state: ConnectionState) {
         _connCont.yield(state)
     }
@@ -443,6 +492,8 @@ actor XMPPManager {
 
     private func tearDown() {
         phase = .disconnected
+        pingTask?.cancel()
+        pingTask = nil
         worker?.close()
         worker = nil
         iqCallbacks.values.forEach { $0.resume(throwing: XMPPError.disconnected) }

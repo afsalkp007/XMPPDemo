@@ -36,6 +36,7 @@ final class AppEnvironment {
     var connectionState: ConnectionState = .disconnected
     var myBareJID: String = ""
     var isLoggedIn: Bool = false
+    private var shouldReconnect: Bool = false
 
     // MARK: - Init
 
@@ -56,56 +57,44 @@ final class AppEnvironment {
             for await state in xmpp.connectionState {
                 print("[XMPP] connectionState → \(state)")
                 self.connectionState = state
-                self.isLoggedIn = state.isConnected
+                
+                // Auto-reconnect logic
+                if self.shouldReconnect && !state.isConnected {
+                    if case .disconnected = state {
+                        Task { await self.reconnect() }
+                    } else if case .failed = state {
+                        Task { await self.reconnect() }
+                    }
+                }
             }
             print("[XMPP] connectionState stream ended")
         }
 
         // ALWAYS listen for inbound messages and persist them to SwiftData.
-        // This prevents race conditions where offline messages are delivered
-        // by the server *before* the ViewModels have initialized.
-        Task { [weak self] in
-            for await notification in NotificationCenter.default.notifications(named: .xmppInboundMessage) {
-                guard let self else { return }
-                guard let message = notification.userInfo?["message"] as? Message else { continue }
-                
-                print("[DEBUG] AppEnvironment received inbound message: \(message.body) from \(message.fromJID)")
-                
-                try? await self.messageStore.insert(message)
-                
-                print("[DEBUG] AppEnvironment successfully saved message to DB!")
-                
-                // Post a secondary notification letting the UI know the DB has the message
+        // Using synchronous addObserver ensures we don't miss offline messages
+        // that arrive immediately upon connection, avoiding AsyncStream setup race conditions.
+        NotificationCenter.default.addObserver(forName: .xmppInboundMessage, object: nil, queue: nil) { [weak self] notification in
+            guard let message = notification.userInfo?["message"] as? Message else { return }
+            Task {
+                try? await self?.messageStore.insert(message)
                 NotificationCenter.default.post(name: .didInsertMessage, object: nil, userInfo: ["message": message])
             }
         }
         
-        // ALWAYS listen for roster updates and persist them instantly
-        Task { [weak self] in
-            for await notification in NotificationCenter.default.notifications(named: .xmppRosterUpdate) {
-                guard let self else { return }
-                guard let contacts = notification.userInfo?["contacts"] as? [Contact] else { continue }
-                try? await self.rosterStore.upsert(contacts)
-            }
+        NotificationCenter.default.addObserver(forName: .xmppRosterUpdate, object: nil, queue: nil) { [weak self] notification in
+            guard let contacts = notification.userInfo?["contacts"] as? [Contact] else { return }
+            Task { try? await self?.rosterStore.upsert(contacts) }
         }
         
-        // Listen for presence updates
-        Task { [weak self] in
-            for await notification in NotificationCenter.default.notifications(named: .xmppPresenceUpdate) {
-                guard let self else { return }
-                guard let jid = notification.userInfo?["jid"] as? String,
-                      let status = notification.userInfo?["status"] as? PresenceStatus else { continue }
-                try? await self.rosterStore.updatePresence(jid: jid, status: status)
-            }
+        NotificationCenter.default.addObserver(forName: .xmppPresenceUpdate, object: nil, queue: nil) { [weak self] notification in
+            guard let jid = notification.userInfo?["jid"] as? String,
+                  let status = notification.userInfo?["status"] as? PresenceStatus else { return }
+            Task { try? await self?.rosterStore.updatePresence(jid: jid, status: status) }
         }
         
-        // Listen for delivery receipts
-        Task { [weak self] in
-            for await notification in NotificationCenter.default.notifications(named: .xmppMessageDelivered) {
-                guard let self else { return }
-                guard let messageID = notification.userInfo?["messageID"] as? String else { continue }
-                try? await self.messageStore.updateDeliveryStatus(id: messageID, status: .delivered)
-            }
+        NotificationCenter.default.addObserver(forName: .xmppMessageDelivered, object: nil, queue: nil) { [weak self] notification in
+            guard let messageID = notification.userInfo?["messageID"] as? String else { return }
+            Task { try? await self?.messageStore.updateDeliveryStatus(id: messageID, status: .delivered) }
         }
     }
 
@@ -147,6 +136,8 @@ final class AppEnvironment {
             print("[XMPP] waitForConnection: ✅ connected")
             myBareJID = jid.components(separatedBy: "/").first ?? jid
             KeychainHelper.save(jid: jid, password: password)
+            isLoggedIn = true
+            shouldReconnect = true
             return
 
         case .failed(let err):
@@ -185,10 +176,19 @@ final class AppEnvironment {
     }
 
     func logout() async {
+        shouldReconnect = false
         await connectUseCase.disconnect()
         isLoggedIn = false
         myBareJID  = ""
         KeychainHelper.clear()
+    }
+
+    private func reconnect() async {
+        guard shouldReconnect, let creds = savedCredentials else { return }
+        try? await Task.sleep(for: .seconds(2)) // Backoff
+        // Check if we still need to reconnect after waiting
+        guard shouldReconnect, !connectionState.isConnected else { return }
+        try? await connectUseCase.execute(jid: creds.jid, password: creds.password, host: nil)
     }
 
     // MARK: - Saved Credentials
