@@ -85,4 +85,53 @@ final class XMPPStanzaTests: XCTestCase {
             XCTAssertEqual(error as? HTTPUploadSlotError, .malformedResponse)
         }
     }
+    
+    func testParsesStreamFeatures() {
+        let el = XMPPElement(name: "stream:features", attributes: [:], children: [], text: "")
+        guard case let .streamFeatures(features) = XMPPStanza.parse(el) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(features.name, "stream:features")
+    }
+    
+    func testParsesProceed() {
+        let el = XMPPElement(name: "proceed", attributes: ["xmlns": "urn:ietf:params:xml:ns:xmpp-tls"], children: [], text: "")
+        guard case .proceed = XMPPStanza.parse(el) else { return XCTFail() }
+    }
+    
+    func testParsesSASLSuccess() {
+        let el = XMPPElement(name: "success", attributes: ["xmlns": "urn:ietf:params:xml:ns:xmpp-sasl"], children: [], text: "")
+        guard case .saslSuccess = XMPPStanza.parse(el) else { return XCTFail() }
+    }
+    
+    func testParsesSASLFailure() {
+        let el = XMPPElement(name: "failure", attributes: ["xmlns": "urn:ietf:params:xml:ns:xmpp-sasl"], children: [
+            XMPPElement(name: "not-authorized", attributes: [:], children: [], text: "")
+        ], text: "")
+        guard case let .saslFailure(reason) = XMPPStanza.parse(el) else { return XCTFail() }
+        XCTAssertEqual(reason, "not-authorized")
+    }
+    
+    func testParsesSMResumed() {
+        let el = XMPPElement(name: "resumed", attributes: ["xmlns": "urn:xmpp:sm:3", "previd": "abc", "h": "10"], children: [], text: "")
+        guard case let .smResumed(id, h) = XMPPStanza.parse(el) else { return XCTFail() }
+        XCTAssertEqual(id, "abc")
+        XCTAssertEqual(h, 10)
+    }
+    
+    func testParsesSMFailed() {
+        let el = XMPPElement(name: "failed", attributes: ["xmlns": "urn:xmpp:sm:3"], children: [], text: "")
+        guard case .smFailed = XMPPStanza.parse(el) else { return XCTFail() }
+    }
+    
+    func testParsesSMAckRequest() {
+        let el = XMPPElement(name: "r", attributes: ["xmlns": "urn:xmpp:sm:3"], children: [], text: "")
+        guard case .smAckRequest = XMPPStanza.parse(el) else { return XCTFail() }
+    }
+    
+    func testParsesSMAck() {
+        let el = XMPPElement(name: "a", attributes: ["xmlns": "urn:xmpp:sm:3", "h": "5"], children: [], text: "")
+        guard case let .smAck(h) = XMPPStanza.parse(el) else { return XCTFail() }
+        XCTAssertEqual(h, 5)
+    }
 }
