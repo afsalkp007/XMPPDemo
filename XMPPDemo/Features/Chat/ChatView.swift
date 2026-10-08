@@ -37,6 +37,9 @@ struct ChatView: View {
                     onSend: {
                         Task { await vm.sendMessage() }
                     },
+                    onImageSelected: { image in
+                        Task { await vm.sendImage(image) }
+                    },
                     onTextChange: {
                         vm.onInputChanged()
                     }

@@ -115,6 +115,51 @@ actor XMPPManager {
         )
     }
 
+    func requestUploadSlot(filename: String, size: Int, mimeType: String) async throws -> (putURL: URL, getURL: URL) {
+        guard phase == .active else { throw XMPPError.disconnected }
+
+        let id = UUID().uuidString
+        let uploadDomain = "upload.\(domain)"
+        
+        let requestXML = """
+        <iq type='get' to='\(escapeXML(uploadDomain))' id='\(id)'>\
+        <request xmlns='urn:xmpp:http:upload:0' filename='\(escapeXML(filename))' size='\(size)' content-type='\(escapeXML(mimeType))'/>\
+        </iq>
+        """
+        
+        send(requestXML)
+        
+        let response = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<XMPPElement, Error>) in
+            self.iqCallbacks[id] = cont
+            
+            // Timeout after 15s
+            Task {
+                try? await Task.sleep(for: .seconds(15))
+                await self.timeoutPing(id: id)
+            }
+        }
+        
+        if response.attributes["type"] == "error" {
+            throw XMPPError.connectionFailed("Server rejected upload slot request")
+        }
+        
+        guard let slot = response.child(named: "slot"),
+              let putNode = slot.child(named: "put"),
+              let getNode = slot.child(named: "get") else {
+            throw XMPPError.connectionFailed("Invalid upload slot response from server")
+        }
+        
+        let putStr = putNode.attributes["url"] ?? putNode.text
+        let getStr = getNode.attributes["url"] ?? getNode.text
+        
+        guard let putURL = URL(string: putStr.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let getURL = URL(string: getStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw XMPPError.connectionFailed("Invalid upload slot URLs from server")
+        }
+        
+        return (putURL, getURL)
+    }
+
     func sendChatState(_ state: ChatState, to recipientJID: String) {
         guard phase == .active else { return }
         send("""

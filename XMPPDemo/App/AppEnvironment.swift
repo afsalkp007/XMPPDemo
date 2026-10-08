@@ -30,6 +30,7 @@ final class AppEnvironment {
     let sendMessageUseCase:    SendMessageUseCase
     let fetchRosterUseCase:    FetchRosterUseCase
     let messageHistoryUseCase: MessageHistoryUseCase
+    let mediaUploadUseCase:    MediaUploadUseCase
 
     // MARK: - Session State (observed by views automatically via @Observable)
 
@@ -50,6 +51,7 @@ final class AppEnvironment {
         sendMessageUseCase    = SendMessageUseCase(xmpp: xmpp, messageStore: messageStore)
         fetchRosterUseCase    = FetchRosterUseCase(rosterStore: rosterStore)
         messageHistoryUseCase = MessageHistoryUseCase(messageStore: messageStore)
+        mediaUploadUseCase    = MediaUploadUseCase(xmpp: xmpp)
 
         // Observe XMPP connection state changes
         Task { [weak self] in

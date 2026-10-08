@@ -46,5 +46,29 @@ The app uses a local-first approach. When you send a message, it is instantly wr
 3. **Build & Run:** Open `XMPPDemo.xcodeproj` in Xcode 15+ and run on the iOS 17 Simulator.
 4. **Login:** Use `alice@localhost` and `bob@localhost` across two simulators to test real-time chat and presence.
 
+### Local image uploads
+
+The local ejabberd configuration can enable XEP-0363 HTTP uploads on
+`https://localhost:5443/upload`. That endpoint needs a TLS certificate, even
+for simulator-only development. Generate a localhost certificate, enable it in
+the `certfiles` section of your active ejabberd configuration, and restart the
+server:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout /opt/homebrew/etc/ejabberd/localhost.pem \
+  -out /opt/homebrew/etc/ejabberd/localhost.pem \
+  -days 3650 -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,DNS:upload.localhost,IP:127.0.0.1,IP:::1"
+```
+
+```yaml
+certfiles:
+  - /opt/homebrew/etc/ejabberd/localhost.pem
+```
+
+The app accepts this self-signed certificate only for loopback and `.local`
+upload URLs. Use a trusted certificate for any non-local server.
+
 ## 📝 License
 This project is for demonstration and portfolio purposes.

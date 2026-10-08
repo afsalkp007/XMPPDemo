@@ -87,6 +87,23 @@ final class ChatViewModel {
         isSending = false
     }
 
+    func sendImage(_ image: UIImage) async {
+        guard !isSending else { return }
+        isSending = true
+        errorMessage = nil
+        stopTypingIndicator()
+        
+        do {
+            let url = try await env.mediaUploadUseCase.execute(image: image, quality: 0.7)
+            let sent = try await env.sendMessageUseCase.execute(to: contact.jid, body: url.absoluteString)
+            messages.append(sent)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        
+        isSending = false
+    }
+
     // MARK: - Typing Indicator (XEP-0085)
 
     func onInputChanged() {

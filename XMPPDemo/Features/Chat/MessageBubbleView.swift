@@ -6,19 +6,37 @@ struct MessageBubbleView: View {
 
     private var isOutgoing: Bool { message.isOutgoing }
 
+    private var isImageURL: Bool {
+        if let url = URL(string: message.body.trimmingCharacters(in: .whitespacesAndNewlines)),
+           url.scheme == "http" || url.scheme == "https" {
+            let ext = url.pathExtension.lowercased()
+            return ["jpg", "jpeg", "png", "gif", "heic", "webp"].contains(ext)
+        }
+        return false
+    }
+
+    private var displayURL: URL? {
+        URL(string: message.body.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
             if isOutgoing { Spacer(minLength: 60) }
 
             VStack(alignment: isOutgoing ? .trailing : .leading, spacing: 4) {
                 // Bubble
-                Text(message.body)
-                    .font(.messageBubble)
-                    .foregroundStyle(isOutgoing ? .white : .textPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(bubbleBackground)
+                if isImageURL, let url = displayURL {
+                    imageView(for: url)
                     .clipShape(BubbleShape(isOutgoing: isOutgoing))
+                } else {
+                    Text(message.body)
+                        .font(.messageBubble)
+                        .foregroundStyle(isOutgoing ? .white : .textPrimary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(bubbleBackground)
+                        .clipShape(BubbleShape(isOutgoing: isOutgoing))
+                }
 
                 // Timestamp + delivery status
                 HStack(spacing: 4) {
@@ -51,6 +69,45 @@ struct MessageBubbleView: View {
                 Color.bubbleIn
             }
         }
+    }
+
+    @ViewBuilder
+    private func imageView(for url: URL) -> some View {
+        if InsecureURLSessionDelegate.allowsLocalCertificateException(for: url) {
+            InsecureAsyncImage(url: url)
+        } else {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .empty:
+                    ProgressView()
+                        .tint(isOutgoing ? .white : .brandCyan)
+                        .frame(width: 200, height: 200)
+                        .background(bubbleBackground)
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: 240, maxHeight: 320)
+                        .clipped()
+                case .failure:
+                    imageLoadFailure
+                @unknown default:
+                    EmptyView()
+                }
+            }
+        }
+    }
+
+    private var imageLoadFailure: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "photo.badge.exclamationmark")
+                .font(.title)
+            Text("Failed to load")
+                .font(.appCaption)
+        }
+        .foregroundStyle(isOutgoing ? .white : .textSecondary)
+        .frame(width: 200, height: 200)
+        .background(bubbleBackground)
     }
 
     private var deliveryColor: Color {

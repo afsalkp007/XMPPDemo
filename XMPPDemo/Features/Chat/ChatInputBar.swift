@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -8,13 +9,36 @@ struct ChatInputBar: View {
     @Binding var text: String
     var isDisabled: Bool = false
     var onSend: () -> Void
+    var onImageSelected: ((UIImage) -> Void)? = nil
     var onTextChange: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
+    @State private var selectedItem: PhotosPickerItem? = nil
     private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isDisabled }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
+            
+            // Attachment Button
+            if let onImageSelected {
+                PhotosPicker(selection: $selectedItem, matching: .images) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(isDisabled ? .textTertiary : .brandCyan)
+                        .frame(width: 40, height: 44)
+                }
+                .disabled(isDisabled)
+                .onChange(of: selectedItem) { _, newItem in
+                    Task {
+                        if let data = try? await newItem?.loadTransferable(type: Data.self),
+                           let image = UIImage(data: data) {
+                            onImageSelected(image)
+                        }
+                        selectedItem = nil
+                    }
+                }
+            }
+
             // Text field
             ZStack(alignment: .leading) {
                 if text.isEmpty {
