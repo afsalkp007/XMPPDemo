@@ -66,6 +66,22 @@ actor XMPPManager: XMPPMessageSending, XMPPUploadSlotRequesting {
     private var smInH: UInt32 = 0
     private var smOutH: UInt32 = 0
     private var unackedStanzas: [(h: UInt32, xml: String)] = []
+    
+#if DEBUG
+    // MARK: - Testing Hooks
+    var test_smID: String? { smID }
+    var test_unackedStanzasCount: Int { unackedStanzas.count }
+    var test_smInH: UInt32 { smInH }
+    var test_smOutH: UInt32 { smOutH }
+    
+    func test_setSMState(id: String, inH: UInt32, outH: UInt32, unacked: [(UInt32, String)]) {
+        self.smID = id
+        self.smInH = inH
+        self.smOutH = outH
+        self.unackedStanzas = unacked
+        self.phase = .active
+    }
+#endif
 
     // MARK: - Public State
     
