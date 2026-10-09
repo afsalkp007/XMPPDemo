@@ -1,58 +1,92 @@
 # XMPP Real-Time Messaging Client
 
-A high-performance, native iOS XMPP chat client built from scratch using **SwiftUI**, **Modern Swift Concurrency (`async/await`)**, and **SwiftData**. 
+A high-performance, offline-first iOS XMPP chat client built from scratch using **Swift Concurrency**, **SwiftUI**, and **SwiftData**. Features a custom TCP socket layer bypassing legacy dependencies.
 
-This project demonstrates a production-ready real-time messaging architecture, completely bypassing heavy legacy Objective-C dependencies like `XMPPFramework`. It features a custom `NWConnection` socket layer, a lightweight raw XML stream parser, and an offline-first sync engine.
+This project demonstrates a production-ready real-time messaging architecture, completely bypassing heavy legacy Objective-C dependencies like `XMPPFramework`. It features a custom `NWConnection` socket layer, a lightweight raw XML stream parser, end-to-end message encryption, and an offline-first sync engine.
+
+---
 
 ## 🚀 Key Features
 
-* **Custom XMPP Engine:** Built purely in Swift using `Network.framework` (TCP sockets) and `XMLParser`. Handles the full XMPP handshake including TLS upgrades (`STARTTLS`), SASL authentication (Plain), and resource binding.
+* **Custom XMPP Engine:** Built purely in Swift using `Network.framework` (TCP sockets) and custom `XMLParser` handler. Manages full XMPP handshake including TLS upgrades (`STARTTLS`), SASL authentication (Plain), and resource binding.
+* **End-to-End Encryption (E2EE):** Zero-trust message encryption using Apple's **CryptoKit**. P-256 Elliptic Curve Diffie-Hellman (ECDH) key agreement, HKDF-SHA256 key derivation, and AES-GCM-256 payload sealing with dynamic public key exchange via presence stanzas (`<e2ee-pubkey>`).
+* **Secure Enclave Storage:** Hardware-backed private key generation (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) with Keychain fallback for iOS Simulators.
 * **Offline-First Architecture:** Powered by **SwiftData**. Messages and roster contacts are persisted locally *before* transmission, ensuring zero data loss during network disconnects. The UI reads exclusively from the local cache.
-* **Real-Time Presence:** Live bidirectional presence tracking (`Online`, `Offline`, `Away`) with typing indicators and auto-subscription handling.
-* **Modern Concurrency:** Zero thread-blocking. Uses `Task`, `async/await`, and `async let` for concurrent stream reading and UI updates.
-* **Clean Architecture:** Strict MVVM separation. Domain models are fully decoupled from the network and persistence layers. UI reacts instantly via `@Observable`.
-* **Security First:** Enforces TLS encryption for all stream traffic prior to authentication. 
+* **Real-Time Presence & Status:** Live bidirectional presence tracking (`Available`, `Away`, `Offline`) with automated roster subscription handling and typing indicators.
+* **Media & Image Sharing:** Built-in XEP-0363 HTTP File Upload support for sending images over TLS with async upload progress indicators.
+* **Modern Concurrency & Architecture:** Built with Swift Concurrency (`async/await`, `Task`, `Sendable`, `@Observable`), decoupled clean MVVM pattern, and dependency injection.
 
-## 🛠 Tech Stack
-- **UI:** SwiftUI (iOS 17+)
-- **Concurrency:** Swift Concurrency (`async/await`, `TaskGroups`, `AsyncStream`)
-- **Persistence:** SwiftData
-- **Networking:** `Network.framework` (`NWConnection`), custom XML stream parsing
-- **Backend Compatibility:** Fully tested against `ejabberd` (Erlang) and fully compliant with RFC 6120/6121.
+---
+
+## 🛠 Tech Stack & Standards
+
+- **UI & UX:** SwiftUI (iOS 17+), custom dark-mode glassmorphic design system.
+- **Concurrency:** Swift 5.10 / 6 ready Concurrency (`async/await`, `Task`, `MainActor`, `Sendable`).
+- **Cryptography & Security:** `CryptoKit`, `Security.framework` (Keychain), Secure Enclave.
+- **Persistence:** `SwiftData` (`ModelContainer`, `@Model`).
+- **Networking:** `Network.framework` (`NWConnection`), custom XML stream parser.
+- **XMPP & XEP Specifications:**
+  - **RFC 6120:** XMPP Core (Stream management, TLS, SASL)
+  - **RFC 6121:** XMPP Instant Messaging & Presence (Roster management)
+  - **XEP-0363:** HTTP File Upload (Media attachment delivery)
+  - **E2EE Extension:** Custom `<e2ee-pubkey>` and `<e2ee>` stanza payload extension.
+
+---
 
 ## 📱 Screenshots
 <img src="https://github.com/user-attachments/assets/eeb38d83-470b-40bb-b6ec-94c4b088201c" width="256" height="556" />
 <img src="https://github.com/user-attachments/assets/12d76824-5a08-4111-a9cb-729420f41163" width="256" height="556" />
 <img src="https://github.com/user-attachments/assets/4f50ad68-1079-4fcc-a96f-463dcb1af3bc" width="256" height="556" />
 
+---
+
 ## 🧠 Architecture Highlights
 
-### The Real-Time Layer (`XMPPManager`)
-Instead of polling or relying on bloated libraries, the app maintains a persistent background TCP socket. Incoming XML fragments are streamed through a custom event-driven parser. This layer is entirely decoupled—when an `<iq>` or `<message>` stanza arrives, it is parsed into strongly-typed Swift structs and broadcast to the view models via `NotificationCenter`.
+### 1. The Real-Time Engine (`XMPPManager`)
+Maintains a persistent background TCP socket via `Network.framework`. Incoming XML fragments are streamed through an event-driven parser. When `<iq>`, `<presence>`, or `<message>` stanzas arrive, they are parsed into strongly-typed Swift models and handled asynchronously without blocking the UI.
 
-### Data Synchronization (`MessageStore` & `RosterStore`)
-The app uses a local-first approach. When you send a message, it is instantly written to SwiftData and rendered in the UI, while a detached background task manages the actual XMPP network delivery. If the socket disconnects, the app gracefully queues changes for the next reconnection.
+### 2. End-to-End Encryption Engine (`CryptoService`)
+Upon authenticating, the client advertises its ECDH P-256 public key over XMPP presence. When sending a chat message, `CryptoService` derives an ephemeral symmetric key via HKDF SHA-256 from the recipient's public key and encrypts the plaintext payload using AES-GCM-256.
+
+### 3. Data Synchronization (`MessageStore` & `RosterStore`)
+Local-first strategy. Messages are immediately saved to SwiftData and rendered in the view, while background tasks manage XMPP network delivery. If network connectivity drops, outbound updates queue gracefully.
+
+---
+
+## 🧪 Testing & Quality Assurance
+
+The codebase includes an automated unit test suite covering critical layers:
+- **`CryptoServiceTests`:** Validates ECDH key agreement, public key derivation, and AES-GCM encryption/decryption round-trips.
+- **`XMPPStanzaTests`:** Verifies XML serialization/parsing for core stanzas, presence updates, and `<e2ee>` encrypted payloads.
+- **`XMPPStreamParserTests`:** Validates chunked TCP data buffering and XML stream parsing edge cases.
+- **`AuthViewModelTests` & `ConversationListViewModelTests`:** Tests authentication validation and view model state handling.
+- **`MessageStoreTests`:** Tests SwiftData query filtering and message history persistence.
+
+---
 
 ## 🚀 Getting Started
 
-1. **Clone the repository.**
-2. **Run a local XMPP Server:** You can easily run `ejabberd` locally via Homebrew:
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/username/XMPPDemo.git
+   cd XMPPDemo
+   ```
+
+2. **Run a local XMPP Server (`ejabberd`):**
    ```bash
    brew install ejabberd
    ejabberdctl start
    ejabberdctl register alice localhost password123
    ejabberdctl register bob localhost password123
    ```
-3. **Build & Run:** Open `XMPPDemo.xcodeproj` in Xcode 15+ and run on the iOS 17 Simulator.
-4. **Login:** Use `alice@localhost` and `bob@localhost` across two simulators to test real-time chat and presence.
 
-### Local image uploads
+3. **Build & Run:** Open `XMPPDemo.xcodeproj` in Xcode 15+ and run on two iOS 17+ Simulators.
 
-The local ejabberd configuration can enable XEP-0363 HTTP uploads on
-`https://localhost:5443/upload`. That endpoint needs a TLS certificate, even
-for simulator-only development. Generate a localhost certificate, enable it in
-the `certfiles` section of your active ejabberd configuration, and restart the
-server:
+4. **Login & Chat:** Sign in as `alice@localhost` on Simulator 1 and `bob@localhost` on Simulator 2 to experience real-time messaging, presence sync, and E2EE encryption.
+
+### Local Image Upload Setup (XEP-0363)
+
+To test HTTP image uploads locally with `ejabberd`:
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -nodes \
@@ -62,13 +96,13 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   -addext "subjectAltName=DNS:localhost,DNS:upload.localhost,IP:127.0.0.1,IP:::1"
 ```
 
+Add the certificate path to your `ejabberd.yml`:
 ```yaml
 certfiles:
   - /opt/homebrew/etc/ejabberd/localhost.pem
 ```
 
-The app accepts this self-signed certificate only for loopback and `.local`
-upload URLs. Use a trusted certificate for any non-local server.
+---
 
 ## 📝 License
-This project is for demonstration and portfolio purposes.
+This project is created for demonstration and portfolio purposes.
